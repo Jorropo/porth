@@ -1498,33 +1498,49 @@ class Llvm_instruction:
 
 class Llvm_block:
     """A basic block of instructions"""
-    phis: List[Tuple[int, Dict[Llvm_block, int]]]
+    name: int
+    phis: List[Tuple[Llvm_stack_value, List[Tuple[Llvm_block, Llvm_stack_value]]]]
     stack: List[Llvm_stack_value]
     instructions: List[Llvm_instruction]
+    nextBlock: Optional[Llvm_block] = None # if set to None ends the program
+    alternativeBlock: Optional[Llvm_block] = None # if set to non None the condition value is red, if false jumps to alternative
+    condition: Optional[Llvm_stack_value] = None
     def __init__(self, parent: Optional[Llvm_block]):
         global llvm_block_counter
         self.name = llvm_block_counter
         llvm_block_counter += 1
-        phis: List[Tuple[int, Dict[Llvm_block, int]]] = []
+        phis: List[Tuple[Llvm_stack_value, List[Tuple[Llvm_block, Llvm_stack_value]]]] = []
         stack: List[Llvm_stack_value] = []
         if parent is not None: # If none then we are the entry block
             stack = copy(parent.stack)
-            for s in stack:
+            for i in range(len(stack)):
                 # Assign a new variable name for each member of the stack and then create a matching phi
                 # This will result in a lot of useless phi nodes but llvm knows how to remove thoses
                 new_name = llvm_make_name()
-                phis.append((new_name, {parent: s.name}))
-                s.name = new_name
+                phis.append((stack[i], [(parent, parent.stack[i])]))
+                stack[i].name = new_name
         self.phis = phis
         self.stack = stack
         self.instructions = []
 
+    def addPhis(self, newParent: Llvm_block, op: Op):
+        if len(self.phis) != len(newParent.stack):
+            compiler_error_with_expansion_stack(op.token, "Stacks length doesn't match.")
+            exit(1)
+        for i in range(len(self.phis)):
+            if self.phis[i][0].type != newParent.stack[0].type:
+                compiler_error_with_expansion_stack(op.token, "Stacks don't match at depth %d." % i)
+                exit(1)
+            self.phis[i][1].append((newParent, newParent.stack[0]))
+
 def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
     # First pass generate the SSA by running a virtual stack.
     global llvm_name_counter, llvm_block_counter
-    llvm_name_counter = 3 # 0 is argc, 1 is argv, 2 is envp even tho we don't use it.
+    llvm_name_counter = 2 # 0 is argc, 1 is argv
     llvm_block_counter = 0
     block: Llvm_block = Llvm_block(None)
+    blocks: List[Llvm_block] = [block]
+    controlFlowStack: List[Llvm_block] = []
     for op in program:
         if op.typ == OpType.PUSH_INT:
             pushed = Llvm_stack_value(DataType.INT)
@@ -1659,7 +1675,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(Llvm_stack_value(DataType.PTR, 1))
             elif op.operand == Intrinsic.CAST_PTR:
                 if len(block.stack) < 1:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for CAST_PTR intrinsic. Excepted 1 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for CAST_PTR intrinsic. Excepted 1 element.")
                     exit(1)
                 inVariable = block.stack.pop()
                 if inVariable.type != DataType.INT:
@@ -1670,7 +1686,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.CAST_INT:
                 if len(block.stack) < 1:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for CAST_INT intrinsic. Excepted 1 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for CAST_INT intrinsic. Excepted 1 element.")
                     exit(1)
                 inVariable = block.stack.pop()
                 if inVariable.type != DataType.PTR and inVariable.type != DataType.BOOL:
@@ -1681,8 +1697,33 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             else:
                 assert False, "not implemented"
+        elif op.typ == OpType.IF:
+            oldBlock = block
+            if len(oldBlock.stack) < 1:
+                compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for IF keyword. Excepted 1 element.")
+                exit(1)
+            testVariable = oldBlock.stack.pop()
+            if testVariable.type != DataType.BOOL:
+                compiler_error_with_expansion_stack(op.token, "invalid type for IF keyword. Excepted BOOL element.")
+                exit(1)
+            oldBlock.condition = testVariable
+            block = Llvm_block(oldBlock)
+            controlFlowStack.append(oldBlock)
+            blocks.append(block)
+            oldBlock.nextBlock = block
+        elif op.typ == OpType.END:
+            if len(controlFlowStack) < 1:
+                compiler_error_with_expansion_stack(op.token, "Unmatched END.")
+                exit(1)
+            oldBlock, block = block, Llvm_block(oldBlock)
+            blocks.append(block)
+            oldBlock.nextBlock = block
+            preCase = controlFlowStack.pop()
+            preCase.alternativeBlock = block
+            block.addPhis(preCase, op)
         else:
             assert False, "not implemented"
+    assert len(controlFlowStack) == 0, "Unmatched IF"
 
     # Second pass dump the SSA as llvm IR.
     with open(out_file_path, "w") as out:
@@ -1695,68 +1736,87 @@ declare dso_local void @print(i64) nounwind ; Implemented in the entry assembly 
 ; We used named identifiers everywhere instead of numbered one because llvm doesn't support unconsecutive numbered ones.
 define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
 """)
-        for ins in block.instructions:
-            if ins.op == OpType.PUSH_INT:
-                assert isinstance(ins.operand, int), "internal compiler error"
-                out.write("  %%n%d = add i64 0, %d\n" % (ins.outVariables[0].name, ins.operand))
-            elif ins.op == OpType.INTRINSIC:
-                if ins.operand == Intrinsic.PLUS or ins.operand == Intrinsic.MINUS or ins.operand == Intrinsic.MUL:
-                    # For PLUS, MINUS and MUL cheat a bit. LLVM really wants you to use their pointer access logic, but it's too high level for us.
-                    # For now we change pointers into i64 and manually do math on them.
-                    isOperatingOnPTR = ins.outVariables[0].type == DataType.PTR
-                    lhs = ins.inVariables[1]
-                    if isOperatingOnPTR and lhs.type == DataType.PTR:
-                        tempVariableForPTRConversion = Llvm_stack_value(DataType.INT)
-                        out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (tempVariableForPTRConversion.name, lhs.name))
-                        lhs = tempVariableForPTRConversion
-                    rhs = ins.inVariables[0]
-                    if isOperatingOnPTR and rhs.type == DataType.PTR:
-                        tempVariableForPTRConversion = Llvm_stack_value(DataType.INT)
-                        out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (tempVariableForPTRConversion.name, rhs.name))
-                        rhs = tempVariableForPTRConversion
-                    result = ins.outVariables[0]
-                    tempVariableForPTRConversion = Llvm_stack_value(DataType.INT) if isOperatingOnPTR else result
-                    out.write("  %%n%d = %s i64 %%n%d, %%n%d\n" % (tempVariableForPTRConversion.name, "add" if ins.operand == Intrinsic.PLUS else ("sub" if ins.operand == Intrinsic.MINUS else "mul"), lhs.name, rhs.name))
-                    if isOperatingOnPTR:
-                        out.write("  %%n%d = inttoptr i64 %%n%d to i64*\n" % (result.name, tempVariableForPTRConversion.name))
-                elif ins.operand == Intrinsic.DIVMOD:
-                    out.write("  %%n%d = udiv i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                    out.write("  %%n%d = urem i64 %%n%d, %%n%d\n" % (ins.outVariables[1].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                elif ins.operand == Intrinsic.PRINT:
-                    out.write("  call void @print(i64 %%n%d)\n" % ins.inVariables[0].name)
-                elif ins.operand == Intrinsic.EQ:
-                    tempVariableForZeroExtension = llvm_make_name()
-                    out.write("  %%n%d = icmp eq i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                elif ins.operand == Intrinsic.NE:
-                    tempVariableForZeroExtension = llvm_make_name()
-                    out.write("  %%n%d = icmp ne i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                elif ins.operand == Intrinsic.GT:
-                    tempVariableForZeroExtension = llvm_make_name()
-                    out.write("  %%n%d = icmp ugt i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                elif ins.operand == Intrinsic.LT:
-                    tempVariableForZeroExtension = llvm_make_name()
-                    out.write("  %%n%d = icmp ult i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                elif ins.operand == Intrinsic.GE:
-                    tempVariableForZeroExtension = llvm_make_name()
-                    out.write("  %%n%d = icmp uge i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                elif ins.operand == Intrinsic.LE:
-                    tempVariableForZeroExtension = llvm_make_name()
-                    out.write("  %%n%d = icmp ule i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                elif ins.operand == Intrinsic.CAST_PTR:
-                    if ins.inVariables[0].type != DataType.INT:
-                        assert False, "Unsupported cast to PTR"
-                    out.write("  %%n%d = inttoptr i64 %%n%d to i64*\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
-                elif ins.operand == Intrinsic.CAST_INT:
-                    if ins.inVariables[0].type == DataType.BOOL:
-                        out.write("  %%n%d = zext i1 %%n%d to i64\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
-                    elif ins.inVariables[0].type == DataType.PTR:
-                        out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
+        for block in blocks:
+            # Setup label
+            if block.name > 0:
+                out.write("B%d:\n" % block.name)
+            # Setup phis
+            for phi in block.phis:
+                out.write("  %%n%d = phi %s %s\n" % (
+                    phi[0].name, "i64" if phi[0].type == DataType.INT else ("i64*" if phi[0].type == DataType.PTR else "i1"),
+                    ", ".join(["[ %%n%d, %%B%d ]" % (parent[1].name, parent[0].name) for parent in phi[1]])
+                ))
+            # Setup instructions
+            for ins in block.instructions:
+                if ins.op == OpType.PUSH_INT:
+                    assert isinstance(ins.operand, int), "internal compiler error"
+                    out.write("  %%n%d = add i64 0, %d\n" % (ins.outVariables[0].name, ins.operand))
+                elif ins.op == OpType.INTRINSIC:
+                    if ins.operand == Intrinsic.PLUS or ins.operand == Intrinsic.MINUS or ins.operand == Intrinsic.MUL:
+                        # For PLUS, MINUS and MUL cheat a bit. LLVM really wants you to use their pointer access logic, but it's too high level for us.
+                        # For now we change pointers into i64 and manually do math on them.
+                        isOperatingOnPTR = ins.outVariables[0].type == DataType.PTR
+                        lhs = ins.inVariables[1]
+                        if isOperatingOnPTR and lhs.type == DataType.PTR:
+                            tempVariableForPTRConversion = Llvm_stack_value(DataType.INT)
+                            out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (tempVariableForPTRConversion.name, lhs.name))
+                            lhs = tempVariableForPTRConversion
+                        rhs = ins.inVariables[0]
+                        if isOperatingOnPTR and rhs.type == DataType.PTR:
+                            tempVariableForPTRConversion = Llvm_stack_value(DataType.INT)
+                            out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (tempVariableForPTRConversion.name, rhs.name))
+                            rhs = tempVariableForPTRConversion
+                        result = ins.outVariables[0]
+                        tempVariableForPTRConversion = Llvm_stack_value(DataType.INT) if isOperatingOnPTR else result
+                        out.write("  %%n%d = %s i64 %%n%d, %%n%d\n" % (tempVariableForPTRConversion.name, "add" if ins.operand == Intrinsic.PLUS else ("sub" if ins.operand == Intrinsic.MINUS else "mul"), lhs.name, rhs.name))
+                        if isOperatingOnPTR:
+                            out.write("  %%n%d = inttoptr i64 %%n%d to i64*\n" % (result.name, tempVariableForPTRConversion.name))
+                    elif ins.operand == Intrinsic.DIVMOD:
+                        out.write("  %%n%d = udiv i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                        out.write("  %%n%d = urem i64 %%n%d, %%n%d\n" % (ins.outVariables[1].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    elif ins.operand == Intrinsic.PRINT:
+                        out.write("  call void @print(i64 %%n%d)\n" % ins.inVariables[0].name)
+                    elif ins.operand == Intrinsic.EQ:
+                        out.write("  %%n%d = icmp eq i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    elif ins.operand == Intrinsic.NE:
+                        out.write("  %%n%d = icmp ne i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    elif ins.operand == Intrinsic.GT:
+                        out.write("  %%n%d = icmp ugt i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    elif ins.operand == Intrinsic.LT:
+                        out.write("  %%n%d = icmp ult i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    elif ins.operand == Intrinsic.GE:
+                        out.write("  %%n%d = icmp uge i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    elif ins.operand == Intrinsic.LE:
+                        out.write("  %%n%d = icmp ule i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    elif ins.operand == Intrinsic.CAST_PTR:
+                        if ins.inVariables[0].type != DataType.INT:
+                            assert False, "Unsupported cast to PTR"
+                        out.write("  %%n%d = inttoptr i64 %%n%d to i64*\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
+                    elif ins.operand == Intrinsic.CAST_INT:
+                        if ins.inVariables[0].type == DataType.BOOL:
+                            out.write("  %%n%d = zext i1 %%n%d to i64\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
+                        elif ins.inVariables[0].type == DataType.PTR:
+                            out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
+                        else:
+                            assert False, "Casting INT to INT"
                     else:
-                        assert False, "Casting INT to INT"
+                        assert False, "not implemented"
                 else:
                     assert False, "not implemented"
+            # Setup branch
+            if block.alternativeBlock is None:
+                # Uncondtional branch
+                if block.nextBlock is None:
+                    # Ending block
+                    out.write("  br label %Bfinish\n")
+                else:
+                    out.write("  br label %%B%d\n" % block.nextBlock.name)
             else:
-                assert False, "not implemented"
+                # Conditional branch
+                assert block.condition is not None, "internal compiler bug"
+                out.write("  br i1 %%n%d, label %%B%s, label %%B%d\n" % (block.condition.name, block.nextBlock.name if block.nextBlock is not None else "finish", block.alternativeBlock.name))
+            out.write("\n")
+        out.write("Bfinish:\n")
         out.write("  ret i64 0\n}\n")
 
 assert len(Keyword) == 7, "Exhaustive KEYWORD_NAMES definition."
@@ -2218,9 +2278,9 @@ if __name__ == '__main__' and '__file__' in globals():
         include_paths.append(path.dirname(program_path))
 
         program = compile_file_to_program(program_path, include_paths, expansion_limit);
+        if not unsafe:
+            type_check_program(program)
         if not llvm:
-            if not unsafe:
-                type_check_program(program)
             generate_nasm_linux_x86_64(program, basepath + ".asm")
             cmd_call_echoed(["nasm", "-felf64", basepath + ".asm"], silent)
             cmd_call_echoed(["ld", "-o", basepath, basepath + ".o"], silent)
