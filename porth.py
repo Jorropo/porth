@@ -1547,9 +1547,9 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
             block.instructions.append(Llvm_instruction(op.typ, [], [pushed], op.operand))
             block.stack.append(pushed)
         elif op.typ == OpType.INTRINSIC:
-            if op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS or op.operand == Intrinsic.MUL:
+            if op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS or op.operand == Intrinsic.MUL or op.operand == Intrinsic.SHR or op.operand == Intrinsic.SHL:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % "PLUS" if op.operand == Intrinsic.PLUS else ("MINUS" if op.operand == Intrinsic.MINUS else "MUL"))
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % str(op.operand))
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 outVariable = Llvm_stack_value(DataType.PTR if inVariables[0].type == DataType.PTR or inVariables[1].type == DataType.PTR else DataType.INT)
@@ -1643,6 +1643,28 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                         exit(1)
                 outVariable = Llvm_stack_value(DataType.BOOL)
                 block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.AND or op.operand == Intrinsic.OR:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % str(op.operand))
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                if inVariables[0].type != inVariables[1].type and (inVariables[0].type != DataType.INT and inVariables[0].type != DataType.BOOL):
+                    compiler_error_with_expansion_stack(op.token, "input types are invalid for %s intrinsic. Excepted 2 matching elements either INT or BOOL." % str(op.operand))
+                    exit(1)
+                outVariable = Llvm_stack_value(inVariables[0].type)
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.NOT:
+                if len(block.stack) < 1:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for NOT intrinsic. Excepted 1 element.")
+                    exit(1)
+                inVariable = block.stack.pop()
+                if inVariable.type != DataType.INT and inVariable.type != DataType.BOOL:
+                    compiler_error_with_expansion_stack(op.token, "input types are invalid for %s intrinsic. Excepted 1 element either INT or BOOL." % str(op.operand))
+                    exit(1)
+                outVariable = Llvm_stack_value(inVariables[0].type)
+                block.instructions.append(Llvm_instruction(op.typ, [inVariable], [outVariable], op.operand))
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.DUP:
                 if len(block.stack) < 1:
@@ -1769,7 +1791,7 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                     assert isinstance(ins.operand, int), "internal compiler error"
                     out.write("  %%n%d = add i64 0, %d\n" % (ins.outVariables[0].name, ins.operand))
                 elif ins.op == OpType.INTRINSIC:
-                    if ins.operand == Intrinsic.PLUS or ins.operand == Intrinsic.MINUS or ins.operand == Intrinsic.MUL:
+                    if ins.operand == Intrinsic.PLUS or ins.operand == Intrinsic.MINUS or ins.operand == Intrinsic.MUL or ins.operand == Intrinsic.SHR or ins.operand == Intrinsic.SHL:
                         # For PLUS, MINUS and MUL cheat a bit. LLVM really wants you to use their pointer access logic, but it's too high level for us.
                         # For now we change pointers into i64 and manually do math on them.
                         isOperatingOnPTR = ins.outVariables[0].type == DataType.PTR
@@ -1785,7 +1807,14 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                             rhs = tempVariableForPTRConversion
                         result = ins.outVariables[0]
                         tempVariableForPTRConversion = Llvm_stack_value(DataType.INT) if isOperatingOnPTR else result
-                        out.write("  %%n%d = %s i64 %%n%d, %%n%d\n" % (tempVariableForPTRConversion.name, "add" if ins.operand == Intrinsic.PLUS else ("sub" if ins.operand == Intrinsic.MINUS else "mul"), lhs.name, rhs.name))
+                        instructionTable = {
+                            Intrinsic.PLUS: "add",
+                            Intrinsic.MINUS: "sub",
+                            Intrinsic.MUL: "mul",
+                            Intrinsic.SHR: "lshr",
+                            Intrinsic.SHL: "shl"
+                        }
+                        out.write("  %%n%d = %s i64 %%n%d, %%n%d\n" % (tempVariableForPTRConversion.name, instructionTable[ins.operand], lhs.name, rhs.name))
                         if isOperatingOnPTR:
                             out.write("  %%n%d = inttoptr i64 %%n%d to i64*\n" % (result.name, tempVariableForPTRConversion.name))
                     elif ins.operand == Intrinsic.DIVMOD:
@@ -1805,6 +1834,17 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                         out.write("  %%n%d = icmp uge i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
                     elif ins.operand == Intrinsic.LE:
                         out.write("  %%n%d = icmp ule i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    elif ins.operand == Intrinsic.AND or ins.operand == Intrinsic.OR or ins.operand == Intrinsic.NOT:
+                        instructionTable = {
+                            Intrinsic.AND: "and",
+                            Intrinsic.OR: "or",
+                            Intrinsic.NOT: "xor" # xor with -1 to not
+                        }
+                        typeTable = {
+                            DataType.BOOL: "i1",
+                            DataType.INT: "i64",
+                        }
+                        out.write("  %%n%d = %s %s %s, %%n%d\n" % (ins.outVariables[0].name, instructionTable[ins.operand], typeTable[ins.outVariables[0].type], "-1" if ins.operand == Intrinsic.NOT else "%n" + str(ins.inVariables[1].name), ins.inVariables[0].name))
                     elif ins.operand == Intrinsic.CAST_PTR:
                         if ins.inVariables[0].type != DataType.INT:
                             assert False, "Unsupported cast to PTR"
