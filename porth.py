@@ -1415,9 +1415,43 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
         elif op.typ == OpType.INTRINSIC:
             if op.operand == Intrinsic.PRINT:
                 if len(block.stack) < 1:
-                    compiler_error_with_expansion_stack(op.token, "invalid argument types fo DIVMOD intrinsic. Expected INT.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for PRINT intrinsic. Excepted 1 element.")
                     exit(1)
                 block.instructions.append(Llvm_instruction(op.typ, [block.stack.pop()], [], op.operand))
+            elif op.operand == Intrinsic.DUP:
+                if len(block.stack) < 1:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for DUP intrinsic. Excepted 1 element.")
+                    exit(1)
+                block.stack.append(block.stack[-1])
+            elif op.operand == Intrinsic.OVER:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for OVER intrinsic. Excepted 2 elements.")
+                    exit(1)
+                block.stack.append(block.stack[-2])
+            elif op.operand == Intrinsic.DROP:
+                if len(block.stack) < 1:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for DROP intrinsic. Excepted 1 element.")
+                    exit(1)
+                block.stack.pop()
+            elif op.operand == Intrinsic.SWAP:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for SWAP intrinsic. Excepted 2 elements.")
+                    exit(1)
+                block.stack[-2],block.stack[-1] = block.stack[-1],block.stack[-2]
+            elif op.operand == Intrinsic.ROT:
+                if len(block.stack) < 3:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for ROT intrinsic. Excepted 3 elements.")
+                    exit(1)
+                block.stack[-3],block.stack[-2],block.stack[-1] = block.stack[-2],block.stack[-1],block.stack[-3]
+            elif op.operand == Intrinsic.ARGC:
+                block.stack.append(Llvm_stack_value(DataType.INT, 0))
+            elif op.operand == Intrinsic.ARGV:
+                block.stack.append(Llvm_stack_value(DataType.PTR, 1))
+            elif op.operand == Intrinsic.CAST_PTR:
+                if len(block.stack) < 1:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for ROT intrinsic. Excepted 3 elements.")
+                    exit(1)
+                block.stack.append(Llvm_stack_value(DataType.PTR, block.stack.pop().name))
             else:
                 assert False, "not implemented"
         else:
@@ -1897,9 +1931,9 @@ if __name__ == '__main__' and '__file__' in globals():
         include_paths.append(path.dirname(program_path))
 
         program = compile_file_to_program(program_path, include_paths, expansion_limit);
-        if not unsafe:
-            type_check_program(program)
         if not llvm:
+            if not unsafe:
+                type_check_program(program)
             generate_nasm_linux_x86_64(program, basepath + ".asm")
             cmd_call_echoed(["nasm", "-felf64", basepath + ".asm"], silent)
             cmd_call_echoed(["ld", "-o", basepath, basepath + ".o"], silent)
