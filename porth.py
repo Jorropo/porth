@@ -1403,8 +1403,9 @@ class Llvm_block:
         self.instructions = []
 
 def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
+    # First pass generate the SSA by running a virtual stack.
     global llvm_name_counter, llvm_block_counter
-    llvm_name_counter = 3 # 0 is argc, 1 is argv + one buffer because llvm wants one buffer between arguments and variables
+    llvm_name_counter = 3 # 0 is argc, 1 is argv, 2 is envp even tho we don't use it.
     llvm_block_counter = 0
     block: Llvm_block = Llvm_block(None)
     for op in program:
@@ -1450,6 +1451,78 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                     compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for PRINT intrinsic. Excepted 1 element.")
                     exit(1)
                 block.instructions.append(Llvm_instruction(op.typ, [block.stack.pop()], [], op.operand))
+            elif op.operand == Intrinsic.EQ:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for EQ intrinsic. Excepted 2 elements.")
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                for i in inVariables:
+                    if i.type != DataType.INT:
+                        compiler_error_with_expansion_stack(op.token, "invalid type for EQ intrinsic. Excepted INT element.")
+                        exit(1)
+                outVariable = Llvm_stack_value(DataType.BOOL)
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.GT:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for GT intrinsic. Excepted 2 elements.")
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                for i in inVariables:
+                    if i.type != DataType.INT:
+                        compiler_error_with_expansion_stack(op.token, "invalid type for GT intrinsic. Excepted INT element.")
+                        exit(1)
+                outVariable = Llvm_stack_value(DataType.BOOL)
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.LT:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for LT intrinsic. Excepted 2 elements.")
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                for i in inVariables:
+                    if i.type != DataType.INT:
+                        compiler_error_with_expansion_stack(op.token, "invalid type for LT intrinsic. Excepted INT element.")
+                        exit(1)
+                outVariable = Llvm_stack_value(DataType.BOOL)
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.GE:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for GE intrinsic. Excepted 2 elements.")
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                for i in inVariables:
+                    if i.type != DataType.INT:
+                        compiler_error_with_expansion_stack(op.token, "invalid type for GE intrinsic. Excepted INT element.")
+                        exit(1)
+                outVariable = Llvm_stack_value(DataType.BOOL)
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.LE:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for LE intrinsic. Excepted 2 elements.")
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                for i in inVariables:
+                    if i.type != DataType.INT:
+                        compiler_error_with_expansion_stack(op.token, "invalid type for LE intrinsic. Excepted INT element.")
+                        exit(1)
+                outVariable = Llvm_stack_value(DataType.BOOL)
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.NE:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for NE intrinsic. Excepted 2 elements.")
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                for i in inVariables:
+                    if i.type != DataType.INT:
+                        compiler_error_with_expansion_stack(op.token, "invalid type for NE intrinsic. Excepted INT element.")
+                        exit(1)
+                outVariable = Llvm_stack_value(DataType.BOOL)
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
             elif op.operand == Intrinsic.DUP:
                 if len(block.stack) < 1:
                     compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for DUP intrinsic. Excepted 1 element.")
@@ -1488,6 +1561,8 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 assert False, "not implemented"
         else:
             assert False, "not implemented"
+
+    # Second pass dump the SSA as llvm IR.
     with open(out_file_path, "w") as out:
         out.write("""
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
@@ -1495,23 +1570,43 @@ target triple = "x86_64-pc-linux-gnu"
 
 declare dso_local void @print(i64) nounwind ; Implemented in the entry assembly file
 
-define dso_local i64 @main(i64 %0, i8** nocapture readonly %1) nounwind {
+; We used named identifiers everywhere instead of numbered one because llvm doesn't support unconsecutive numbered ones.
+define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
 """)
         for ins in block.instructions:
             if ins.op == OpType.PUSH_INT:
-                out.write("  %%%d = add i64 0, %d\n" % (ins.outVariables[0].name, ins.operand))
+                assert isinstance(ins.operand, int), "internal compiler error"
+                out.write("  %%n%d = add i64 0, %d\n" % (ins.outVariables[0].name, ins.operand))
             elif ins.op == OpType.INTRINSIC:
                 if ins.operand == Intrinsic.PLUS:
-                    out.write("  %%%d = add i64 %%%d, %%%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    out.write("  %%n%d = add i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
                 elif ins.operand == Intrinsic.MINUS:
-                    out.write("  %%%d = sub i64 %%%d, %%%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    out.write("  %%n%d = sub i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
                 elif ins.operand == Intrinsic.MUL:
-                    out.write("  %%%d = mul i64 %%%d, %%%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    out.write("  %%n%d = mul i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
                 elif ins.operand == Intrinsic.DIVMOD:
-                    out.write("  %%%d = udiv i64 %%%d, %%%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                    out.write("  %%%d = urem i64 %%%d, %%%d\n" % (ins.outVariables[1].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    out.write("  %%n%d = udiv i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    out.write("  %%n%d = urem i64 %%n%d, %%n%d\n" % (ins.outVariables[1].name, ins.inVariables[1].name, ins.inVariables[0].name))
                 elif ins.operand == Intrinsic.PRINT:
-                    out.write("  call void @print(i64 %%%d)\n" % ins.inVariables[0].name)
+                    out.write("  call void @print(i64 %%n%d)\n" % ins.inVariables[0].name)
+                elif ins.operand == Intrinsic.EQ:
+                    tempVariableForZeroExtension = llvm_make_name()
+                    out.write("  %%n%d = icmp eq i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.NE:
+                    tempVariableForZeroExtension = llvm_make_name()
+                    out.write("  %%n%d = icmp ne i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.GT:
+                    tempVariableForZeroExtension = llvm_make_name()
+                    out.write("  %%n%d = icmp ugt i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.LT:
+                    tempVariableForZeroExtension = llvm_make_name()
+                    out.write("  %%n%d = icmp ult i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.GE:
+                    tempVariableForZeroExtension = llvm_make_name()
+                    out.write("  %%n%d = icmp uge i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.LE:
+                    tempVariableForZeroExtension = llvm_make_name()
+                    out.write("  %%n%d = icmp ule i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
                 else:
                     assert False, "not implemented"
             else:
