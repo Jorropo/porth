@@ -1365,7 +1365,7 @@ class Llvm_stack_value:
     type: DataType
     """Helps dealing with stack frames in the SSA context."""
     def __init__(self, type: DataType, name: Optional[int] = None):
-        self.name = llvm_make_name() if name is None else name # name is not None in case of argv / argc
+        self.name = llvm_make_name() if name is None else name
         self.type = type
 
 class Llvm_instruction:
@@ -1413,7 +1413,39 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
             block.instructions.append(Llvm_instruction(op.typ, [], [pushed], op.operand))
             block.stack.append(pushed)
         elif op.typ == OpType.INTRINSIC:
-            if op.operand == Intrinsic.PRINT:
+            if op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % "PLUS" if op.operand == Intrinsic.PLUS else "MINUS")
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                outVariable = Llvm_stack_value(DataType.PTR if inVariables[0].type == DataType.PTR or inVariables[1].type == DataType.PTR else DataType.INT)
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.MUL:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for MUL intrinsic. Excepted 2 elements.")
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                for i in inVariables:
+                    if i.type != DataType.INT:
+                        compiler_error_with_expansion_stack(op.token, "invalid type for MUL intrinsic. Excepted INT element.")
+                        exit(1)
+                outVariable = Llvm_stack_value(DataType.INT)
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.DIVMOD:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for DIVMOD intrinsic. Excepted 2 elements.")
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                for i in inVariables:
+                    if i.type != DataType.INT:
+                        compiler_error_with_expansion_stack(op.token, "invalid type for DIVMOD intrinsic. Excepted INT element.")
+                        exit(1)
+                outVariables = [Llvm_stack_value(DataType.INT), Llvm_stack_value(DataType.INT)]
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, outVariables, op.operand))
+                block.stack += outVariables
+            elif op.operand == Intrinsic.PRINT:
                 if len(block.stack) < 1:
                     compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for PRINT intrinsic. Excepted 1 element.")
                     exit(1)
@@ -1469,7 +1501,16 @@ define dso_local i64 @main(i64 %0, i8** nocapture readonly %1) nounwind {
             if ins.op == OpType.PUSH_INT:
                 out.write("  %%%d = add i64 0, %d\n" % (ins.outVariables[0].name, ins.operand))
             elif ins.op == OpType.INTRINSIC:
-                if ins.operand == Intrinsic.PRINT:
+                if ins.operand == Intrinsic.PLUS:
+                    out.write("  %%%d = add i64 %%%d, %%%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.MINUS:
+                    out.write("  %%%d = sub i64 %%%d, %%%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.MUL:
+                    out.write("  %%%d = mul i64 %%%d, %%%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.DIVMOD:
+                    out.write("  %%%d = udiv i64 %%%d, %%%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    out.write("  %%%d = urem i64 %%%d, %%%d\n" % (ins.outVariables[1].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.PRINT:
                     out.write("  call void @print(i64 %%%d)\n" % ins.inVariables[0].name)
                 else:
                     assert False, "not implemented"
