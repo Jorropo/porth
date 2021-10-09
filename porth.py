@@ -1531,24 +1531,12 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
             block.instructions.append(Llvm_instruction(op.typ, [], [pushed], op.operand))
             block.stack.append(pushed)
         elif op.typ == OpType.INTRINSIC:
-            if op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS:
+            if op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS or op.operand == Intrinsic.MUL:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % "PLUS" if op.operand == Intrinsic.PLUS else "MINUS")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % "PLUS" if op.operand == Intrinsic.PLUS else ("MINUS" if op.operand == Intrinsic.MINUS else "MUL"))
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 outVariable = Llvm_stack_value(DataType.PTR if inVariables[0].type == DataType.PTR or inVariables[1].type == DataType.PTR else DataType.INT)
-                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
-                block.stack.append(outVariable)
-            elif op.operand == Intrinsic.MUL:
-                if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for MUL intrinsic. Excepted 2 elements.")
-                    exit(1)
-                inVariables = [block.stack.pop(), block.stack.pop()]
-                for i in inVariables:
-                    if i.type != DataType.INT:
-                        compiler_error_with_expansion_stack(op.token, "invalid type for MUL intrinsic. Excepted INT element.")
-                        exit(1)
-                outVariable = Llvm_stack_value(DataType.INT)
                 block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.DIVMOD:
@@ -1671,9 +1659,26 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(Llvm_stack_value(DataType.PTR, 1))
             elif op.operand == Intrinsic.CAST_PTR:
                 if len(block.stack) < 1:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for ROT intrinsic. Excepted 3 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for CAST_PTR intrinsic. Excepted 1 elements.")
                     exit(1)
-                block.stack.append(Llvm_stack_value(DataType.PTR, block.stack.pop().name))
+                inVariable = block.stack.pop()
+                if inVariable.type != DataType.INT:
+                    compiler_error_with_expansion_stack(op.token, "invalid type for CAST_PTR intrinsic. Excepted INT element.")
+                    exit(1)
+                outVariable = Llvm_stack_value(DataType.PTR)
+                block.instructions.append(Llvm_instruction(op.typ, [inVariable], [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.CAST_INT:
+                if len(block.stack) < 1:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for CAST_INT intrinsic. Excepted 1 elements.")
+                    exit(1)
+                inVariable = block.stack.pop()
+                if inVariable.type != DataType.PTR and inVariable.type != DataType.BOOL:
+                    compiler_error_with_expansion_stack(op.token, "invalid type for CAST_INT intrinsic. Excepted PTR or BOOL element.")
+                    exit(1)
+                outVariable = Llvm_stack_value(DataType.INT)
+                block.instructions.append(Llvm_instruction(op.typ, [inVariable], [outVariable], op.operand))
+                block.stack.append(outVariable)
             else:
                 assert False, "not implemented"
         else:
@@ -1695,12 +1700,25 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                 assert isinstance(ins.operand, int), "internal compiler error"
                 out.write("  %%n%d = add i64 0, %d\n" % (ins.outVariables[0].name, ins.operand))
             elif ins.op == OpType.INTRINSIC:
-                if ins.operand == Intrinsic.PLUS:
-                    out.write("  %%n%d = add i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                elif ins.operand == Intrinsic.MINUS:
-                    out.write("  %%n%d = sub i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
-                elif ins.operand == Intrinsic.MUL:
-                    out.write("  %%n%d = mul i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                if ins.operand == Intrinsic.PLUS or ins.operand == Intrinsic.MINUS or ins.operand == Intrinsic.MUL:
+                    # For PLUS, MINUS and MUL cheat a bit. LLVM really wants you to use their pointer access logic, but it's too high level for us.
+                    # For now we change pointers into i64 and manually do math on them.
+                    isOperatingOnPTR = ins.outVariables[0].type == DataType.PTR
+                    lhs = ins.inVariables[1]
+                    if isOperatingOnPTR and lhs.type == DataType.PTR:
+                        tempVariableForPTRConversion = Llvm_stack_value(DataType.INT)
+                        out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (tempVariableForPTRConversion.name, lhs.name))
+                        lhs = tempVariableForPTRConversion
+                    rhs = ins.inVariables[0]
+                    if isOperatingOnPTR and rhs.type == DataType.PTR:
+                        tempVariableForPTRConversion = Llvm_stack_value(DataType.INT)
+                        out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (tempVariableForPTRConversion.name, rhs.name))
+                        rhs = tempVariableForPTRConversion
+                    result = ins.outVariables[0]
+                    tempVariableForPTRConversion = Llvm_stack_value(DataType.INT) if isOperatingOnPTR else result
+                    out.write("  %%n%d = %s i64 %%n%d, %%n%d\n" % (tempVariableForPTRConversion.name, "add" if ins.operand == Intrinsic.PLUS else ("sub" if ins.operand == Intrinsic.MINUS else "mul"), lhs.name, rhs.name))
+                    if isOperatingOnPTR:
+                        out.write("  %%n%d = inttoptr i64 %%n%d to i64*\n" % (result.name, tempVariableForPTRConversion.name))
                 elif ins.operand == Intrinsic.DIVMOD:
                     out.write("  %%n%d = udiv i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
                     out.write("  %%n%d = urem i64 %%n%d, %%n%d\n" % (ins.outVariables[1].name, ins.inVariables[1].name, ins.inVariables[0].name))
@@ -1724,6 +1742,17 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                 elif ins.operand == Intrinsic.LE:
                     tempVariableForZeroExtension = llvm_make_name()
                     out.write("  %%n%d = icmp ule i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.CAST_PTR:
+                    if ins.inVariables[0].type != DataType.INT:
+                        assert False, "Unsupported cast to PTR"
+                    out.write("  %%n%d = inttoptr i64 %%n%d to i64*\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
+                elif ins.operand == Intrinsic.CAST_INT:
+                    if ins.inVariables[0].type == DataType.BOOL:
+                        out.write("  %%n%d = zext i1 %%n%d to i64\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
+                    elif ins.inVariables[0].type == DataType.PTR:
+                        out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
+                    else:
+                        assert False, "Casting INT to INT"
                 else:
                     assert False, "not implemented"
             else:
