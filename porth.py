@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
 import os
 import sys
 import subprocess
@@ -1301,6 +1302,147 @@ def generate_nasm_linux_x86_64(program: Program, out_file_path: str):
         out.write("args_ptr: resq 1\n")
         out.write("mem: resb %d\n" % MEM_CAPACITY)
 
+def generate_llvm_entry_assembly_linux_x86_64(out_file_path: str):
+    with open(out_file_path, "w") as out:
+        out.write("BITS 64\n")
+        out.write("segment .text\n")
+        out.write("global print\n")
+        out.write("print:\n")
+        out.write("    mov     r9, -3689348814741910323\n")
+        out.write("    sub     rsp, 40\n")
+        out.write("    mov     BYTE [rsp+31], 10\n")
+        out.write("    lea     rcx, [rsp+30]\n")
+        out.write(".L2:\n")
+        out.write("    mov     rax, rdi\n")
+        out.write("    lea     r8, [rsp+32]\n")
+        out.write("    mul     r9\n")
+        out.write("    mov     rax, rdi\n")
+        out.write("    sub     r8, rcx\n")
+        out.write("    shr     rdx, 3\n")
+        out.write("    lea     rsi, [rdx+rdx*4]\n")
+        out.write("    add     rsi, rsi\n")
+        out.write("    sub     rax, rsi\n")
+        out.write("    add     eax, 48\n")
+        out.write("    mov     BYTE [rcx], al\n")
+        out.write("    mov     rax, rdi\n")
+        out.write("    mov     rdi, rdx\n")
+        out.write("    mov     rdx, rcx\n")
+        out.write("    sub     rcx, 1\n")
+        out.write("    cmp     rax, 9\n")
+        out.write("    ja      .L2\n")
+        out.write("    lea     rax, [rsp+32]\n")
+        out.write("    mov     edi, 1\n")
+        out.write("    sub     rdx, rax\n")
+        out.write("    xor     eax, eax\n")
+        out.write("    lea     rsi, [rsp+32+rdx]\n")
+        out.write("    mov     rdx, r8\n")
+        out.write("    mov     rax, 1\n")
+        out.write("    syscall\n")
+        out.write("    add     rsp, 40\n")
+        out.write("    ret\n")
+        out.write("extern main\n")
+        out.write("global _start\n")
+        out.write("_start:\n")
+        out.write("    pop rdi      ; Set ARGC argument\n")
+        out.write("    mov rsi, rsp ; Set ARGV argument\n")
+        out.write("    call main\n")
+        out.write("    mov rdi, rax\n")
+        out.write("    mov rax, 60 ; exit\n")
+        out.write("    syscall\n")
+
+global llvm_name_counter, llvm_block_counter
+llvm_name_counter = 0 # 0 is argc, 1 is argv
+llvm_block_counter = 0
+
+def llvm_make_name() -> int:
+    global llvm_name_counter
+    name = llvm_name_counter
+    llvm_name_counter += 1
+    return name
+
+class Llvm_stack_value:
+    name: int
+    type: DataType
+    """Helps dealing with stack frames in the SSA context."""
+    def __init__(self, type: DataType, name: Optional[int] = None):
+        self.name = llvm_make_name() if name is None else name # name is not None in case of argv / argc
+        self.type = type
+
+class Llvm_instruction:
+    op: OpType
+    inVariables: List[Llvm_stack_value]
+    outVariables: List[Llvm_stack_value]
+    operand: Union[int, str, Intrinsic, None]
+    def __init__(self, opperation: OpType, inVariables: List[Llvm_stack_value], outVariables: List[Llvm_stack_value], operand: Union[int, str, Intrinsic, None] = None):
+        self.op = opperation
+        self.inVariables = inVariables
+        self.outVariables = outVariables
+        self.operand = operand
+
+class Llvm_block:
+    """A basic block of instructions"""
+    phis: List[Tuple[int, Dict[Llvm_block, int]]]
+    stack: List[Llvm_stack_value]
+    instructions: List[Llvm_instruction]
+    def __init__(self, parent: Optional[Llvm_block]):
+        global llvm_block_counter
+        self.name = llvm_block_counter
+        llvm_block_counter += 1
+        phis: List[Tuple[int, Dict[Llvm_block, int]]] = []
+        stack: List[Llvm_stack_value] = []
+        if parent is not None: # If none then we are the entry block
+            stack = copy(parent.stack)
+            for s in stack:
+                # Assign a new variable name for each member of the stack and then create a matching phi
+                # This will result in a lot of useless phi nodes but llvm knows how to remove thoses
+                new_name = llvm_make_name()
+                phis.append((new_name, {parent: s.name}))
+                s.name = new_name
+        self.phis = phis
+        self.stack = stack
+        self.instructions = []
+
+def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
+    global llvm_name_counter, llvm_block_counter
+    llvm_name_counter = 3 # 0 is argc, 1 is argv + one buffer because llvm wants one buffer between arguments and variables
+    llvm_block_counter = 0
+    block: Llvm_block = Llvm_block(None)
+    for op in program:
+        if op.typ == OpType.PUSH_INT:
+            pushed = Llvm_stack_value(DataType.INT)
+            block.instructions.append(Llvm_instruction(op.typ, [], [pushed], op.operand))
+            block.stack.append(pushed)
+        elif op.typ == OpType.INTRINSIC:
+            if op.operand == Intrinsic.PRINT:
+                if len(block.stack) < 1:
+                    compiler_error_with_expansion_stack(op.token, "invalid argument types fo DIVMOD intrinsic. Expected INT.")
+                    exit(1)
+                block.instructions.append(Llvm_instruction(op.typ, [block.stack.pop()], [], op.operand))
+            else:
+                assert False, "not implemented"
+        else:
+            assert False, "not implemented"
+    with open(out_file_path, "w") as out:
+        out.write("""
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-pc-linux-gnu"
+
+declare dso_local void @print(i64) nounwind ; Implemented in the entry assembly file
+
+define dso_local i64 @main(i64 %0, i8** nocapture readonly %1) nounwind {
+""")
+        for ins in block.instructions:
+            if ins.op == OpType.PUSH_INT:
+                out.write("  %%%d = add i64 0, %d\n" % (ins.outVariables[0].name, ins.operand))
+            elif ins.op == OpType.INTRINSIC:
+                if ins.operand == Intrinsic.PRINT:
+                    out.write("  call void @print(i64 %%%d)\n" % ins.inVariables[0].name)
+                else:
+                    assert False, "not implemented"
+            else:
+                assert False, "not implemented"
+        out.write("  ret i64 0\n}\n")
+
 assert len(Keyword) == 7, "Exhaustive KEYWORD_NAMES definition."
 KEYWORD_NAMES = {
     'if': Keyword.IF,
@@ -1634,6 +1776,7 @@ def usage(compiler_name: str):
     print("        -r                  Run the program after successful compilation")
     print("        -o <file|dir>       Customize the output path")
     print("        -s                  Silent mode. Don't print any info about compilation phases.")
+    print("        -llvm               Output llvm IR and build it with clang.")
     print("    help                  Print this help to stdout and exit with 0 code")
 
 if __name__ == '__main__' and '__file__' in globals():
@@ -1697,6 +1840,7 @@ if __name__ == '__main__' and '__file__' in globals():
         silent = False
         run = False
         output_path = None
+        llvm = False
         while len(argv) > 0:
             arg, *argv = argv
             if arg == '-r':
@@ -1709,9 +1853,15 @@ if __name__ == '__main__' and '__file__' in globals():
                     print("[ERROR] no argument is provided for parameter -o", file=sys.stderr)
                     exit(1)
                 output_path, *argv = argv
+            elif arg == "-llvm":
+                llvm = True
             else:
                 program_path = arg
                 break
+
+        if llvm and unsafe:
+            print("[ERROR] Llvm mode is only supported in safe mode.")
+            exit(2)
 
         if program_path is None:
             usage(compiler_name)
@@ -1749,9 +1899,15 @@ if __name__ == '__main__' and '__file__' in globals():
         program = compile_file_to_program(program_path, include_paths, expansion_limit);
         if not unsafe:
             type_check_program(program)
-        generate_nasm_linux_x86_64(program, basepath + ".asm")
-        cmd_call_echoed(["nasm", "-felf64", basepath + ".asm"], silent)
-        cmd_call_echoed(["ld", "-o", basepath, basepath + ".o"], silent)
+        if not llvm:
+            generate_nasm_linux_x86_64(program, basepath + ".asm")
+            cmd_call_echoed(["nasm", "-felf64", basepath + ".asm"], silent)
+            cmd_call_echoed(["ld", "-o", basepath, basepath + ".o"], silent)
+        else:
+            generate_llvm_entry_assembly_linux_x86_64(basepath + ".llvm.entry.asm")
+            generate_llvm_linux_x86_64(program, basepath + ".ll")
+            cmd_call_echoed(["nasm", "-felf64", basepath + ".llvm.entry.asm"], silent)
+            cmd_call_echoed(["clang", "-nostdlib", "-O2", "-o", basepath, basepath + ".llvm.entry.o", basepath + ".ll"], silent)
         if run:
             exit(cmd_call_echoed([basepath] + argv, silent))
     elif subcommand == "help":
