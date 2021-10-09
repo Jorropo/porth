@@ -1717,6 +1717,33 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 outVariable = Llvm_stack_value(DataType.INT)
                 block.instructions.append(Llvm_instruction(op.typ, [inVariable], [outVariable], op.operand))
                 block.stack.append(outVariable)
+            elif op.operand == Intrinsic.SYSCALL0 or op.operand == Intrinsic.SYSCALL1 or op.operand == Intrinsic.SYSCALL2 or op.operand == Intrinsic.SYSCALL3 or op.operand == Intrinsic.SYSCALL4 or op.operand == Intrinsic.SYSCALL5 or op.operand == Intrinsic.SYSCALL6:
+                assert isinstance(op.operand, Intrinsic), "internal compiler bug"
+                n = {
+                    Intrinsic.SYSCALL0: 0,
+                    Intrinsic.SYSCALL1: 1,
+                    Intrinsic.SYSCALL2: 2,
+                    Intrinsic.SYSCALL3: 3,
+                    Intrinsic.SYSCALL4: 4,
+                    Intrinsic.SYSCALL5: 5,
+                    Intrinsic.SYSCALL6: 6
+                }[op.operand]
+                if len(block.stack) < n+1:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for SYSCALL%d intrinsic. Excepted %d elements." % (n, n + 1))
+                    exit(1)
+                inVariables = [block.stack.pop()]
+                if inVariables[0].type != DataType.INT:
+                    compiler_error_with_expansion_stack(op.token, "type error for SYSCALL%d intrinsic. Excepted INT element for syscall ID." % n)
+                    exit(1)
+                for _ in range(n):
+                    v = block.stack.pop()
+                    if v.type != DataType.INT and v.type != DataType.PTR:
+                        compiler_error_with_expansion_stack(op.token, "type error for SYSCALL%d intrinsic. Excepted INT or PTR elements for parameters." % n)
+                        exit(1)
+                    inVariables.append(v)
+                outVariable = Llvm_stack_value(DataType.INT)
+                block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
             else:
                 assert False, "not implemented"
         elif op.typ == OpType.IF:
@@ -1792,6 +1819,7 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                     out.write("  %%n%d = add i64 0, %d\n" % (ins.outVariables[0].name, ins.operand))
                 elif ins.op == OpType.INTRINSIC:
                     if ins.operand == Intrinsic.PLUS or ins.operand == Intrinsic.MINUS or ins.operand == Intrinsic.MUL or ins.operand == Intrinsic.SHR or ins.operand == Intrinsic.SHL:
+                        assert isinstance(ins.operand, Intrinsic), "internal compiler bug"
                         # For PLUS, MINUS and MUL cheat a bit. LLVM really wants you to use their pointer access logic, but it's too high level for us.
                         # For now we change pointers into i64 and manually do math on them.
                         isOperatingOnPTR = ins.outVariables[0].type == DataType.PTR
@@ -1835,6 +1863,7 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                     elif ins.operand == Intrinsic.LE:
                         out.write("  %%n%d = icmp ule i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
                     elif ins.operand == Intrinsic.AND or ins.operand == Intrinsic.OR or ins.operand == Intrinsic.NOT:
+                        assert isinstance(ins.operand, Intrinsic), "internal compiler bug"
                         instructionTable = {
                             Intrinsic.AND: "and",
                             Intrinsic.OR: "or",
@@ -1856,6 +1885,12 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                             out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
                         else:
                             assert False, "Casting INT to INT"
+                    elif ins.operand == Intrinsic.SYSCALL0 or ins.operand == Intrinsic.SYSCALL1 or ins.operand == Intrinsic.SYSCALL2 or ins.operand == Intrinsic.SYSCALL3 or ins.operand == Intrinsic.SYSCALL4 or ins.operand == Intrinsic.SYSCALL5 or ins.operand == Intrinsic.SYSCALL6:
+                        registers = [',{di}',',{si}',',{dx}',',{r10}',',{r8}',',{r9}']
+                        variables: List[Union[int, str]] = [ins.outVariables[0].name, ins.inVariables[0].name]
+                        for i in ins.inVariables[1:]:
+                            variables += ["i64*" if i.type == DataType.PTR else "i64", i.name]
+                        out.write(('  %%n%d = call i64 asm sideeffect "syscall", "={ax},{ax}' + "".join(registers[:len(ins.inVariables)-1]) + ',~{rcx},~{r11},~{memory},~{dirflag},~{fpsr},~{flags}"(i64 %%n%d' + ', %s %%n%d' * (len(ins.inVariables)-1) + ') nounwind\n') % tuple(i for i in variables))
                     else:
                         assert False, "not implemented"
                 else:
