@@ -80,6 +80,7 @@ def save_test_case(file_path: str,
 class RunStats:
     sim_failed: int = 0
     com_failed: int = 0
+    com_llvm_failed: int = 0
     ignored: int = 0
 
 def run_test_for_file(file_path: str, stats: RunStats = RunStats()):
@@ -117,6 +118,19 @@ def run_test_for_file(file_path: str, stats: RunStats = RunStats()):
             print("    stdout: \n%s" % com.stdout.decode("utf-8"))
             print("    stderr: \n%s" % com.stderr.decode("utf-8"))
             stats.com_failed += 1
+
+        llvm = cmd_run_echoed([sys.executable, "./porth.py", "com", "-llvm", "-r", "-s", file_path, *tc.argv], input=tc.stdin, capture_output=True)
+        if llvm.returncode != tc.returncode or llvm.stdout != tc.stdout or llvm.stderr != tc.stderr:
+            print("[ERROR] Unexpected compilation output")
+            print("  Expected:")
+            print("    return code: %s" % tc.returncode)
+            print("    stdout: \n%s" % tc.stdout.decode("utf-8"))
+            print("    stderr: \n%s" % tc.stderr.decode("utf-8"))
+            print("  Actual:")
+            print("    return code: %s" % llvm.returncode)
+            print("    stdout: \n%s" % llvm.stdout.decode("utf-8"))
+            print("    stderr: \n%s" % llvm.stderr.decode("utf-8"))
+            stats.com_llvm_failed += 1
     else:
         print('[WARNING] Could not find any input/output data for %s. Skipping...' % file_path)
         stats.ignored += 1
@@ -127,8 +141,8 @@ def run_test_for_folder(folder: str):
         if entry.is_file() and entry.path.endswith(PORTH_EXT):
             run_test_for_file(entry.path, stats)
     print()
-    print("Simulation failed: %d, Compilation failed: %d, Ignored: %d" % (stats.sim_failed, stats.com_failed, stats.ignored))
-    if stats.sim_failed != 0 or stats.com_failed != 0:
+    print("Simulation failed: %d, Compilation failed: %d, LLVM compilation failed: %d, Ignored: %d" % (stats.sim_failed, stats.com_failed, stats.com_llvm_failed, stats.ignored))
+    if stats.sim_failed != 0 or stats.com_failed != 0 or stats.com_llvm_failed != 0:
         exit(1)
 
 def update_input_for_file(file_path: str, argv: List[str]):
