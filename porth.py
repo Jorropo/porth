@@ -9,7 +9,7 @@ from os import path
 from typing import *
 from enum import IntEnum, Enum, auto
 from dataclasses import dataclass
-from copy import copy
+from copy import copy, deepcopy
 from time import sleep
 import traceback
 
@@ -1505,6 +1505,7 @@ class Llvm_block:
     nextBlock: Optional[Llvm_block] = None # if set to None ends the program
     alternativeBlock: Optional[Llvm_block] = None # if set to non None the condition value is red, if false jumps to alternative
     condition: Optional[Llvm_stack_value] = None
+    elsed: bool = False
     def __init__(self, parent: Optional[Llvm_block]):
         global llvm_block_counter
         self.name = llvm_block_counter
@@ -1512,13 +1513,12 @@ class Llvm_block:
         phis: List[Tuple[Llvm_stack_value, List[Tuple[Llvm_block, Llvm_stack_value]]]] = []
         stack: List[Llvm_stack_value] = []
         if parent is not None: # If none then we are the entry block
-            stack = copy(parent.stack)
+            stack = deepcopy(parent.stack)
             for i in range(len(stack)):
                 # Assign a new variable name for each member of the stack and then create a matching phi
                 # This will result in a lot of useless phi nodes but llvm knows how to remove thoses
-                new_name = llvm_make_name()
+                stack[i].name = llvm_make_name()
                 phis.append((stack[i], [(parent, parent.stack[i])]))
-                stack[i].name = new_name
         self.phis = phis
         self.stack = stack
         self.instructions = []
@@ -1715,12 +1715,29 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
             if len(controlFlowStack) < 1:
                 compiler_error_with_expansion_stack(op.token, "Unmatched END.")
                 exit(1)
-            oldBlock, block = block, Llvm_block(oldBlock)
+            oldBlock, block = block, Llvm_block(block)
             blocks.append(block)
             oldBlock.nextBlock = block
             preCase = controlFlowStack.pop()
-            preCase.alternativeBlock = block
+            if preCase.elsed:
+                assert preCase.nextBlock is None, "internal compiler bug"
+                preCase.nextBlock = block
+            else:
+                preCase.alternativeBlock = block
             block.addPhis(preCase, op)
+        elif op.typ == OpType.ELSE:
+            if len(controlFlowStack) < 1:
+                compiler_error_with_expansion_stack(op.token, "Unmatched ELSE.")
+                exit(1)
+            preIf = controlFlowStack.pop()
+            if preIf.elsed:
+                compiler_error_with_expansion_stack(op.token, "ELSing an other ELSE block.")
+                exit(1)
+            block.elsed = True
+            controlFlowStack.append(block)
+            block = Llvm_block(preIf)
+            preIf.alternativeBlock = block
+            blocks.append(block)
         else:
             assert False, "not implemented"
     assert len(controlFlowStack) == 0, "Unmatched IF"
