@@ -1580,7 +1580,12 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 if len(block.stack) < 1:
                     compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for PRINT intrinsic. Excepted 1 element.")
                     exit(1)
-                block.instructions.append(Llvm_instruction(op.typ, [block.stack.pop()], [], op.operand))
+                inVariable = block.stack.pop()
+                if inVariable.type != DataType.INT:
+                    tempVariableForINTConversion = Llvm_stack_value(DataType.INT)
+                    block.instructions.append(Llvm_instruction(OpType.INTRINSIC, [inVariable], [tempVariableForINTConversion], Intrinsic.CAST_INT))
+                    inVariable = tempVariableForINTConversion
+                block.instructions.append(Llvm_instruction(op.typ, [inVariable], [], op.operand))
             elif op.operand == Intrinsic.EQ:
                 if len(block.stack) < 2:
                     compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for EQ intrinsic. Excepted 2 elements.")
