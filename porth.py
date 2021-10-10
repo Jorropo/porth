@@ -1714,23 +1714,27 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                     compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for CAST_PTR intrinsic. Excepted 1 element.")
                     exit(1)
                 inVariable = block.stack.pop()
-                if inVariable.type != DataType.INT:
-                    compiler_error_with_expansion_stack(op.token, "invalid type for CAST_PTR intrinsic. Excepted INT element.")
-                    exit(1)
-                outVariable = Llvm_stack_value(DataType.PTR)
-                block.instructions.append(Llvm_instruction(op.typ, [inVariable], [outVariable], op.operand))
-                block.stack.append(outVariable)
+                if inVariable != DataType.PTR:
+                    if inVariable.type != DataType.INT:
+                        compiler_error_with_expansion_stack(op.token, "invalid type for CAST_PTR intrinsic. Excepted INT element.")
+                        exit(1)
+                    outVariable = Llvm_stack_value(DataType.PTR)
+                    block.instructions.append(Llvm_instruction(op.typ, [inVariable], [outVariable], op.operand))
+                    block.stack.append(outVariable)
+                else:
+                    block.stack.append(inVariable)
             elif op.operand == Intrinsic.CAST_INT:
                 if len(block.stack) < 1:
                     compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for CAST_INT intrinsic. Excepted 1 element.")
                     exit(1)
                 inVariable = block.stack.pop()
-                if inVariable.type != DataType.PTR and inVariable.type != DataType.BOOL:
-                    compiler_error_with_expansion_stack(op.token, "invalid type for CAST_INT intrinsic. Excepted PTR or BOOL element.")
-                    exit(1)
-                outVariable = Llvm_stack_value(DataType.INT)
-                block.instructions.append(Llvm_instruction(op.typ, [inVariable], [outVariable], op.operand))
-                block.stack.append(outVariable)
+
+                if inVariable.type != DataType.INT:
+                    outVariable = Llvm_stack_value(DataType.INT)
+                    block.instructions.append(Llvm_instruction(op.typ, [inVariable], [outVariable], op.operand))
+                    block.stack.append(outVariable)
+                else:
+                    block.stack.append(inVariable)
             elif op.operand == Intrinsic.SYSCALL0 or op.operand == Intrinsic.SYSCALL1 or op.operand == Intrinsic.SYSCALL2 or op.operand == Intrinsic.SYSCALL3 or op.operand == Intrinsic.SYSCALL4 or op.operand == Intrinsic.SYSCALL5 or op.operand == Intrinsic.SYSCALL6:
                 assert isinstance(op.operand, Intrinsic), "internal compiler bug"
                 n = {
