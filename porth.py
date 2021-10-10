@@ -1496,17 +1496,26 @@ class Llvm_instruction:
         self.outVariables = outVariables
         self.operand = operand
 
+class Llvm_block_type(Enum):
+    ENTRY=auto()
+    IF=auto()
+    ELSE=auto()
+    WHILE=auto()
+    DO=auto()
+    END=auto()
+
 class Llvm_block:
     """A basic block of instructions"""
     name: int
+    type: Llvm_block_type
     phis: List[Tuple[Llvm_stack_value, List[Tuple[Llvm_block, Llvm_stack_value]]]]
     stack: List[Llvm_stack_value]
     instructions: List[Llvm_instruction]
     nextBlock: Optional[Llvm_block] = None # if set to None ends the program
     alternativeBlock: Optional[Llvm_block] = None # if set to non None the condition value is red, if false jumps to alternative
     condition: Optional[Llvm_stack_value] = None
-    elsed: bool = False
-    def __init__(self, parent: Optional[Llvm_block]):
+
+    def __init__(self, parent: Optional[Llvm_block], type: Llvm_block_type):
         global llvm_block_counter
         self.name = llvm_block_counter
         llvm_block_counter += 1
@@ -1522,6 +1531,7 @@ class Llvm_block:
         self.phis = phis
         self.stack = stack
         self.instructions = []
+        self.type = type
 
     def addPhis(self, newParent: Llvm_block, op: Op):
         if len(self.phis) != len(newParent.stack):
@@ -1538,7 +1548,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
     global llvm_name_counter, llvm_block_counter
     llvm_name_counter = 2 # 0 is argc, 1 is argv
     llvm_block_counter = 0
-    block: Llvm_block = Llvm_block(None)
+    block: Llvm_block = Llvm_block(None, Llvm_block_type.ENTRY)
     blocks: List[Llvm_block] = [block]
     controlFlowStack: List[Llvm_block] = []
     strs: List[bytes] = []
@@ -1774,7 +1784,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 compiler_error_with_expansion_stack(op.token, "invalid type for IF keyword. Excepted BOOL element.")
                 exit(1)
             oldBlock.condition = testVariable
-            block = Llvm_block(oldBlock)
+            block = Llvm_block(oldBlock, Llvm_block_type.IF)
             controlFlowStack.append(oldBlock)
             blocks.append(block)
             oldBlock.nextBlock = block
@@ -1782,29 +1792,57 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
             if len(controlFlowStack) < 1:
                 compiler_error_with_expansion_stack(op.token, "Unmatched END.")
                 exit(1)
-            oldBlock, block = block, Llvm_block(block)
+            oldBlock, block = block, Llvm_block(block, Llvm_block_type.END)
             blocks.append(block)
             oldBlock.nextBlock = block
-            preCase = controlFlowStack.pop()
-            if preCase.elsed:
-                assert preCase.nextBlock is None, "internal compiler bug"
-                preCase.nextBlock = block
+            previousBlock = controlFlowStack.pop()
+            if oldBlock.type == Llvm_block_type.ELSE:
+                assert previousBlock.nextBlock is None, "internal compiler bug"
+                previousBlock.nextBlock = block
             else:
-                preCase.alternativeBlock = block
-            block.addPhis(preCase, op)
+                if len(controlFlowStack) != 0 and controlFlowStack[-1].type == Llvm_block_type.WHILE:
+                    previousBlock.alternativeBlock = block
+                    whileBlock = controlFlowStack.pop()
+                    oldBlock.nextBlock = whileBlock
+                    whileBlock.addPhis(oldBlock, op)
+                else:
+                    assert previousBlock.nextBlock is not None, "internal compiler bug"
+                    previousBlock.alternativeBlock = block
+            block.addPhis(previousBlock, op)
         elif op.typ == OpType.ELSE:
             if len(controlFlowStack) < 1:
                 compiler_error_with_expansion_stack(op.token, "Unmatched ELSE.")
                 exit(1)
             preIf = controlFlowStack.pop()
-            if preIf.elsed:
+            if preIf.type == Llvm_block_type.ELSE:
                 compiler_error_with_expansion_stack(op.token, "ELSing an other ELSE block.")
                 exit(1)
-            block.elsed = True
+            if block.type != Llvm_block_type.IF:
+                compiler_error_with_expansion_stack(op.token, "ELSing an non IF block.")
+                exit(1)
             controlFlowStack.append(block)
-            block = Llvm_block(preIf)
+            block = Llvm_block(preIf, Llvm_block_type.ELSE)
             preIf.alternativeBlock = block
             blocks.append(block)
+        elif op.typ == OpType.WHILE:
+            oldBlock, block = block, Llvm_block(block, Llvm_block_type.WHILE)
+            blocks.append(block)
+            controlFlowStack.append(block)
+            oldBlock.nextBlock = block
+        elif op.typ == OpType.DO:
+            oldBlock = block
+            if len(oldBlock.stack) < 1:
+                compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for IF keyword. Excepted 1 element.")
+                exit(1)
+            testVariable = oldBlock.stack.pop()
+            if testVariable.type != DataType.BOOL:
+                compiler_error_with_expansion_stack(op.token, "invalid type for DO keyword. Excepted BOOL element.")
+                exit(1)
+            oldBlock.condition = testVariable
+            block = Llvm_block(oldBlock, Llvm_block_type.DO)
+            blocks.append(block)
+            oldBlock.nextBlock = block
+            controlFlowStack.append(oldBlock)
         else:
             assert False, "not implemented"
     assert len(controlFlowStack) == 0, "Unmatched IF"
@@ -1824,11 +1862,11 @@ declare dso_local void @print(i64) nounwind ; Implemented in the entry assembly 
 
 ; We used named identifiers everywhere instead of numbered one because llvm doesn't support unconsecutive numbered ones.
 define dso_local i64 @main(i64 %n0, i8** readonly %n1) nounwind {
+  br label %B0
 """)
         for block in blocks:
             # Setup label
-            if block.name > 0:
-                out.write("B%d:\n" % block.name)
+            out.write("B%d:\n" % block.name)
             # Setup phis
             for phi in block.phis:
                 out.write("  %%n%d = phi %s %s\n" % (
