@@ -1541,11 +1541,20 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
     block: Llvm_block = Llvm_block(None)
     blocks: List[Llvm_block] = [block]
     controlFlowStack: List[Llvm_block] = []
+    strs: List[bytes] = []
     for op in program:
         if op.typ == OpType.PUSH_INT:
-            pushed = Llvm_stack_value(DataType.INT)
-            block.instructions.append(Llvm_instruction(op.typ, [], [pushed], op.operand))
-            block.stack.append(pushed)
+            inVariable = Llvm_stack_value(DataType.INT)
+            block.stack.append(inVariable)
+            block.instructions.append(Llvm_instruction(op.typ, [], [inVariable], op.operand))
+        elif op.typ == OpType.PUSH_STR:
+            assert isinstance(op.operand, str), "internal compiler bug"
+            s = op.operand.encode("utf-8")
+            inVariables = [Llvm_stack_value(DataType.INT), Llvm_stack_value(DataType.PTR)]
+            block.stack += inVariables
+            block.instructions.append(Llvm_instruction(OpType.PUSH_INT, [], [inVariables[0]], len(s)))
+            block.instructions.append(Llvm_instruction(OpType.PUSH_STR, [], [inVariables[1]], len(strs)))
+            strs.append(s)
         elif op.typ == OpType.INTRINSIC:
             if op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS or op.operand == Intrinsic.MUL or op.operand == Intrinsic.SHR or op.operand == Intrinsic.SHL:
                 if len(block.stack) < 2:
@@ -1797,10 +1806,15 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-linux-gnu"
 
+""")
+        for si in range(len(strs)):
+            s = strs[si]
+            out.write('@.s%d = private unnamed_addr constant [%d x i8] c"%s", align 1\n' % (si, len(s), "".join(["\\"+hex(h)[2:].zfill(2) for h in s])))
+        out.write("""
 declare dso_local void @print(i64) nounwind ; Implemented in the entry assembly file
 
 ; We used named identifiers everywhere instead of numbered one because llvm doesn't support unconsecutive numbered ones.
-define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
+define dso_local i64 @main(i64 %n0, i8** readonly %n1) nounwind {
 """)
         for block in blocks:
             # Setup label
@@ -1809,7 +1823,7 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
             # Setup phis
             for phi in block.phis:
                 out.write("  %%n%d = phi %s %s\n" % (
-                    phi[0].name, "i64" if phi[0].type == DataType.INT else ("i64*" if phi[0].type == DataType.PTR else "i1"),
+                    phi[0].name, "i64" if phi[0].type == DataType.INT else ("i8*" if phi[0].type == DataType.PTR else "i1"),
                     ", ".join(["[ %%n%d, %%B%d ]" % (parent[1].name, parent[0].name) for parent in phi[1]])
                 ))
             # Setup instructions
@@ -1817,6 +1831,10 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                 if ins.op == OpType.PUSH_INT:
                     assert isinstance(ins.operand, int), "internal compiler error"
                     out.write("  %%n%d = add i64 0, %d\n" % (ins.outVariables[0].name, ins.operand))
+                elif ins.op == OpType.PUSH_STR:
+                    assert isinstance(ins.operand, int), "internal compiler error"
+                    sl = len(strs[ins.operand])
+                    out.write("  %%n%d = getelementptr inbounds [%d x i8], [%d x i8]* @.s%d, i64 0, i64 0\n" % (ins.outVariables[0].name, sl, sl, ins.operand))
                 elif ins.op == OpType.INTRINSIC:
                     if ins.operand == Intrinsic.PLUS or ins.operand == Intrinsic.MINUS or ins.operand == Intrinsic.MUL or ins.operand == Intrinsic.SHR or ins.operand == Intrinsic.SHL:
                         assert isinstance(ins.operand, Intrinsic), "internal compiler bug"
@@ -1826,12 +1844,12 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                         lhs = ins.inVariables[1]
                         if isOperatingOnPTR and lhs.type == DataType.PTR:
                             tempVariableForPTRConversion = Llvm_stack_value(DataType.INT)
-                            out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (tempVariableForPTRConversion.name, lhs.name))
+                            out.write("  %%n%d = ptrtoint i8* %%n%d to i64\n" % (tempVariableForPTRConversion.name, lhs.name))
                             lhs = tempVariableForPTRConversion
                         rhs = ins.inVariables[0]
                         if isOperatingOnPTR and rhs.type == DataType.PTR:
                             tempVariableForPTRConversion = Llvm_stack_value(DataType.INT)
-                            out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (tempVariableForPTRConversion.name, rhs.name))
+                            out.write("  %%n%d = ptrtoint i8* %%n%d to i64\n" % (tempVariableForPTRConversion.name, rhs.name))
                             rhs = tempVariableForPTRConversion
                         result = ins.outVariables[0]
                         tempVariableForPTRConversion = Llvm_stack_value(DataType.INT) if isOperatingOnPTR else result
@@ -1844,7 +1862,7 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                         }
                         out.write("  %%n%d = %s i64 %%n%d, %%n%d\n" % (tempVariableForPTRConversion.name, instructionTable[ins.operand], lhs.name, rhs.name))
                         if isOperatingOnPTR:
-                            out.write("  %%n%d = inttoptr i64 %%n%d to i64*\n" % (result.name, tempVariableForPTRConversion.name))
+                            out.write("  %%n%d = inttoptr i64 %%n%d to i8*\n" % (result.name, tempVariableForPTRConversion.name))
                     elif ins.operand == Intrinsic.DIVMOD:
                         out.write("  %%n%d = udiv i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
                         out.write("  %%n%d = urem i64 %%n%d, %%n%d\n" % (ins.outVariables[1].name, ins.inVariables[1].name, ins.inVariables[0].name))
@@ -1877,19 +1895,19 @@ define dso_local i64 @main(i64 %n0, i8** nocapture readonly %n1) nounwind {
                     elif ins.operand == Intrinsic.CAST_PTR:
                         if ins.inVariables[0].type != DataType.INT:
                             assert False, "Unsupported cast to PTR"
-                        out.write("  %%n%d = inttoptr i64 %%n%d to i64*\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
+                        out.write("  %%n%d = inttoptr i64 %%n%d to i8*\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
                     elif ins.operand == Intrinsic.CAST_INT:
                         if ins.inVariables[0].type == DataType.BOOL:
                             out.write("  %%n%d = zext i1 %%n%d to i64\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
                         elif ins.inVariables[0].type == DataType.PTR:
-                            out.write("  %%n%d = ptrtoint i64* %%n%d to i64\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
+                            out.write("  %%n%d = ptrtoint i8* %%n%d to i64\n" % (ins.outVariables[0].name, ins.inVariables[0].name))
                         else:
                             assert False, "Casting INT to INT"
                     elif ins.operand == Intrinsic.SYSCALL0 or ins.operand == Intrinsic.SYSCALL1 or ins.operand == Intrinsic.SYSCALL2 or ins.operand == Intrinsic.SYSCALL3 or ins.operand == Intrinsic.SYSCALL4 or ins.operand == Intrinsic.SYSCALL5 or ins.operand == Intrinsic.SYSCALL6:
                         registers = [',{di}',',{si}',',{dx}',',{r10}',',{r8}',',{r9}']
                         variables: List[Union[int, str]] = [ins.outVariables[0].name, ins.inVariables[0].name]
                         for i in ins.inVariables[1:]:
-                            variables += ["i64*" if i.type == DataType.PTR else "i64", i.name]
+                            variables += ["i8*" if i.type == DataType.PTR else "i64", i.name]
                         out.write(('  %%n%d = call i64 asm sideeffect "syscall", "={ax},{ax}' + "".join(registers[:len(ins.inVariables)-1]) + ',~{rcx},~{r11},~{memory},~{dirflag},~{fpsr},~{flags}"(i64 %%n%d' + ', %s %%n%d' * (len(ins.inVariables)-1) + ') nounwind\n') % tuple(i for i in variables))
                     else:
                         assert False, "not implemented"
