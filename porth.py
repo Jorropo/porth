@@ -1507,15 +1507,18 @@ class Llvm_block_type(Enum):
 class Llvm_block:
     """A basic block of instructions"""
     name: int
-    type: Llvm_block_type
+    type: Optional[Llvm_block_type]
+    end: Optional[Llvm_block_type] = None
     phis: List[Tuple[Llvm_stack_value, List[Tuple[Llvm_block, Llvm_stack_value]]]]
     stack: List[Llvm_stack_value]
     instructions: List[Llvm_instruction]
     nextBlock: Optional[Llvm_block] = None # if set to None ends the program
     alternativeBlock: Optional[Llvm_block] = None # if set to non None the condition value is red, if false jumps to alternative
     condition: Optional[Llvm_stack_value] = None
+    elses: List[Llvm_block]
+    op: Optional[Op]
 
-    def __init__(self, parent: Optional[Llvm_block], type: Llvm_block_type):
+    def __init__(self, parent: Optional[Llvm_block], type: Llvm_block_type, op: Optional[Op]):
         global llvm_block_counter
         self.name = llvm_block_counter
         llvm_block_counter += 1
@@ -1532,10 +1535,17 @@ class Llvm_block:
         self.stack = stack
         self.instructions = []
         self.type = type
+        self.elses = []
+        self.op = op
 
     def addPhis(self, newParent: Llvm_block, op: Op):
         if len(self.phis) != len(newParent.stack):
-            compiler_error_with_expansion_stack(op.token, "Stacks length doesn't match.")
+            if newParent.op is not None:
+                compiler_diagnostic_with_expansion_stack(newParent.op.token, "ERROR", "Stacks length doesn't match.")
+                compiler_error_with_expansion_stack(op.token, "With this.")
+            else:
+                compiler_error_with_expansion_stack(op.token, "Stack length doesn't match with base block.")
+            assert False
             exit(1)
         for i in range(len(self.phis)):
             if self.phis[i][0].type != newParent.stack[0].type:
@@ -1548,7 +1558,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
     global llvm_name_counter, llvm_block_counter
     llvm_name_counter = 2 # 0 is argc, 1 is argv
     llvm_block_counter = 0
-    block: Llvm_block = Llvm_block(None, Llvm_block_type.ENTRY)
+    block: Llvm_block = Llvm_block(None, Llvm_block_type.ENTRY, None)
     blocks: List[Llvm_block] = [block]
     controlFlowStack: List[Llvm_block] = []
     strs: List[bytes] = []
@@ -1784,7 +1794,8 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 compiler_error_with_expansion_stack(op.token, "invalid type for IF keyword. Excepted BOOL element.")
                 exit(1)
             oldBlock.condition = testVariable
-            block = Llvm_block(oldBlock, Llvm_block_type.IF)
+            block = Llvm_block(oldBlock, Llvm_block_type.IF, op)
+            oldBlock.end = Llvm_block_type.IF
             controlFlowStack.append(oldBlock)
             blocks.append(block)
             oldBlock.nextBlock = block
@@ -1792,40 +1803,43 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
             if len(controlFlowStack) < 1:
                 compiler_error_with_expansion_stack(op.token, "Unmatched END.")
                 exit(1)
-            oldBlock, block = block, Llvm_block(block, Llvm_block_type.END)
-            blocks.append(block)
-            oldBlock.nextBlock = block
-            previousBlock = controlFlowStack.pop()
-            if oldBlock.type == Llvm_block_type.ELSE:
-                assert previousBlock.nextBlock is None, "internal compiler bug"
-                previousBlock.nextBlock = block
+            previousBlock = controlFlowStack[-1]
+            if previousBlock.end == Llvm_block_type.IF:
+                del controlFlowStack[-1]
+                oldBlock, block = block, Llvm_block(block, Llvm_block_type.END, op)
+                blocks.append(block)
+                oldBlock.nextBlock = block
+                if previousBlock.alternativeBlock is None:
+                    previousBlock.alternativeBlock = block
+                    block.addPhis(previousBlock, op)
+                for b in previousBlock.elses:
+                    b.nextBlock = block
+                    block.addPhis(b, op)
+            elif previousBlock.end == Llvm_block_type.DO:
+                del controlFlowStack[-1]
+                oldBlock, block = block, Llvm_block(previousBlock, Llvm_block_type.END, op)
+                previousBlock.alternativeBlock = block
+                blocks.append(block)
+                whileBlock = previousBlock.elses[0]
+                oldBlock.nextBlock = whileBlock
+                whileBlock.addPhis(oldBlock, op)
             else:
-                if len(controlFlowStack) != 0 and controlFlowStack[-1].type == Llvm_block_type.WHILE:
-                    previousBlock.alternativeBlock = block
-                    whileBlock = controlFlowStack.pop()
-                    oldBlock.nextBlock = whileBlock
-                    whileBlock.addPhis(oldBlock, op)
-                else:
-                    assert previousBlock.nextBlock is not None, "internal compiler bug"
-                    previousBlock.alternativeBlock = block
-            block.addPhis(previousBlock, op)
+                assert False, "internal compiler bug"
         elif op.typ == OpType.ELSE:
             if len(controlFlowStack) < 1:
                 compiler_error_with_expansion_stack(op.token, "Unmatched ELSE.")
                 exit(1)
-            preIf = controlFlowStack.pop()
-            if preIf.type == Llvm_block_type.ELSE:
-                compiler_error_with_expansion_stack(op.token, "ELSing an other ELSE block.")
-                exit(1)
-            if block.type != Llvm_block_type.IF:
+            ifb = controlFlowStack[-1]
+            if ifb.end != Llvm_block_type.IF:
                 compiler_error_with_expansion_stack(op.token, "ELSing an non IF block.")
                 exit(1)
-            controlFlowStack.append(block)
-            block = Llvm_block(preIf, Llvm_block_type.ELSE)
-            preIf.alternativeBlock = block
+            oldBlock, block = block, Llvm_block(ifb, Llvm_block_type.ELSE, op)
+            ifb.elses.append(oldBlock)
+            ifb.alternativeBlock = block
             blocks.append(block)
         elif op.typ == OpType.WHILE:
-            oldBlock, block = block, Llvm_block(block, Llvm_block_type.WHILE)
+            oldBlock, block = block, Llvm_block(block, Llvm_block_type.WHILE, op)
+            oldBlock.end = Llvm_block_type.WHILE
             blocks.append(block)
             controlFlowStack.append(block)
             oldBlock.nextBlock = block
@@ -1839,7 +1853,13 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 compiler_error_with_expansion_stack(op.token, "invalid type for DO keyword. Excepted BOOL element.")
                 exit(1)
             oldBlock.condition = testVariable
-            block = Llvm_block(oldBlock, Llvm_block_type.DO)
+            if len(controlFlowStack) < 1:
+                compiler_error_with_expansion_stack(op.token, "Unmatched do.")
+                exit(1)
+            whileBlock = controlFlowStack.pop()
+            oldBlock.elses.append(whileBlock)
+            block = Llvm_block(oldBlock, Llvm_block_type.DO, op)
+            oldBlock.end = Llvm_block_type.DO
             blocks.append(block)
             oldBlock.nextBlock = block
             controlFlowStack.append(oldBlock)
