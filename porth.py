@@ -1437,7 +1437,7 @@ global llvm_name_counter, llvm_block_counter
 llvm_name_counter = 0 # 0 is argc, 1 is argv
 llvm_block_counter = 0
 
-def llvm_make_name() -> int:
+def Llvm_make_name() -> int:
     global llvm_name_counter
     name = llvm_name_counter
     llvm_name_counter += 1
@@ -1448,7 +1448,7 @@ class Llvm_stack_value:
     type: DataType
     """Helps dealing with stack frames in the SSA context."""
     def __init__(self, type: DataType, name: Optional[int] = None):
-        self.name = llvm_make_name() if name is None else name
+        self.name = Llvm_make_name() if name is None else name
         self.type = type
 
 class Llvm_instruction:
@@ -1495,7 +1495,7 @@ class Llvm_block:
             for i in range(len(stack)):
                 # Assign a new variable name for each member of the stack and then create a matching phi
                 # This will result in a lot of useless phi nodes but llvm knows how to remove thoses
-                stack[i].name = llvm_make_name()
+                stack[i].name = Llvm_make_name()
                 phis.append((stack[i], [(parent, parent.stack[i])]))
         self.phis = phis
         self.stack = stack
@@ -1555,19 +1555,20 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 strs.append(s)
             elif op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % str(op.operand))
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for %s intrinsic. Excepted 2 elements." % str(op.operand))
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
-                ptrc = sum(1 for i in inVariables if i.type == DataType.PTR)
-                if 1 < ptrc:
-                    compiler_error_with_expansion_stack(op.token, "%s intrinsic only support adding PTR to INT or INT to INT, not PTR to PTR." % str(op.operand))
-                    exit(1)
                 if 0 < sum(1 for i in inVariables if i.type == DataType.BOOL):
                     compiler_error_with_expansion_stack(op.token, "%s intrinsic doesn't support BOOL." % str(op.operand))
                     exit(1)
                 if inVariables[0].type == DataType.PTR:
-                    inVariables = inVariables[::-1]
-                if ptrc > 0:
+                    if inVariables[1].type == DataType.PTR:
+                        tempVariableForINTConversion = Llvm_stack_value(DataType.INT)
+                        block.instructions.append(Llvm_instruction(op.typ, [inVariables[0]], [tempVariableForINTConversion], Intrinsic.CAST_INT))
+                        inVariables[0] = tempVariableForINTConversion
+                    else:
+                        inVariables = inVariables[::-1]
+                if 0 < sum(1 for i in inVariables if i.type == DataType.PTR):
                     outVariable = Llvm_stack_value(DataType.PTR)
                     if op.operand == Intrinsic.MINUS:
                         tempZeroValue = Llvm_stack_value(DataType.INT)
@@ -1582,7 +1583,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.MUL or op.operand == Intrinsic.SHR or op.operand == Intrinsic.SHL:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % str(op.operand))
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for %s intrinsic. Excepted 2 elements." % str(op.operand))
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 if inVariables[0].type != DataType.INT or inVariables[1].type != DataType.INT:
@@ -1593,7 +1594,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.DIVMOD:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for DIVMOD intrinsic. Excepted 2 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for DIVMOD intrinsic. Excepted 2 elements.")
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 for i in inVariables:
@@ -1605,7 +1606,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack += outVariables
             elif op.operand == Intrinsic.PRINT:
                 if len(block.stack) < 1:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for PRINT intrinsic. Excepted 1 element.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for PRINT intrinsic. Excepted 1 element.")
                     exit(1)
                 inVariable = block.stack.pop()
                 if inVariable.type != DataType.INT:
@@ -1615,7 +1616,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.instructions.append(Llvm_instruction(op.typ, [inVariable], [], op.operand))
             elif op.operand == Intrinsic.EQ:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for EQ intrinsic. Excepted 2 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for EQ intrinsic. Excepted 2 elements.")
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 for i in inVariables:
@@ -1627,7 +1628,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.GT:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for GT intrinsic. Excepted 2 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for GT intrinsic. Excepted 2 elements.")
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 for i in inVariables:
@@ -1639,7 +1640,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.LT:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for LT intrinsic. Excepted 2 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for LT intrinsic. Excepted 2 elements.")
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 for i in inVariables:
@@ -1651,7 +1652,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.GE:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for GE intrinsic. Excepted 2 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for GE intrinsic. Excepted 2 elements.")
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 for i in inVariables:
@@ -1663,7 +1664,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.LE:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for LE intrinsic. Excepted 2 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for LE intrinsic. Excepted 2 elements.")
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 for i in inVariables:
@@ -1675,7 +1676,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.NE:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for NE intrinsic. Excepted 2 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for NE intrinsic. Excepted 2 elements.")
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 for i in inVariables:
@@ -1687,7 +1688,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.AND or op.operand == Intrinsic.OR:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % str(op.operand))
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for %s intrinsic. Excepted 2 elements." % str(op.operand))
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
                 if inVariables[0].type != inVariables[1].type and (inVariables[0].type != DataType.INT and inVariables[0].type != DataType.BOOL):
@@ -1698,7 +1699,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.NOT:
                 if len(block.stack) < 1:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for NOT intrinsic. Excepted 1 element.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for NOT intrinsic. Excepted 1 element.")
                     exit(1)
                 inVariable = block.stack.pop()
                 if inVariable.type != DataType.INT and inVariable.type != DataType.BOOL:
@@ -1709,27 +1710,27 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.DUP:
                 if len(block.stack) < 1:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for DUP intrinsic. Excepted 1 element.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for DUP intrinsic. Excepted 1 element.")
                     exit(1)
-                block.stack.append(block.stack[-1])
+                block.stack.append(deepcopy(block.stack[-1]))
             elif op.operand == Intrinsic.OVER:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for OVER intrinsic. Excepted 2 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for OVER intrinsic. Excepted 2 elements.")
                     exit(1)
-                block.stack.append(block.stack[-2])
+                block.stack.append(deepcopy(block.stack[-2]))
             elif op.operand == Intrinsic.DROP:
                 if len(block.stack) < 1:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for DROP intrinsic. Excepted 1 element.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for DROP intrinsic. Excepted 1 element.")
                     exit(1)
                 block.stack.pop()
             elif op.operand == Intrinsic.SWAP:
                 if len(block.stack) < 2:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for SWAP intrinsic. Excepted 2 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for SWAP intrinsic. Excepted 2 elements.")
                     exit(1)
                 block.stack[-2],block.stack[-1] = block.stack[-1],block.stack[-2]
             elif op.operand == Intrinsic.ROT:
                 if len(block.stack) < 3:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for ROT intrinsic. Excepted 3 elements.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for ROT intrinsic. Excepted 3 elements.")
                     exit(1)
                 block.stack[-3],block.stack[-2],block.stack[-1] = block.stack[-2],block.stack[-1],block.stack[-3]
             elif op.operand == Intrinsic.ARGC:
@@ -1738,7 +1739,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.stack.append(Llvm_stack_value(DataType.PTR, 1))
             elif op.operand == Intrinsic.CAST_PTR:
                 if len(block.stack) < 1:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for CAST_PTR intrinsic. Excepted 1 element.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for CAST_PTR intrinsic. Excepted 1 element.")
                     exit(1)
                 inVariable = block.stack.pop()
                 if inVariable != DataType.PTR:
@@ -1752,13 +1753,13 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                     block.stack.append(inVariable)
             elif op.operand == Intrinsic.CAST_INT:
                 if len(block.stack) < 1:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for CAST_INT intrinsic. Excepted 1 element.")
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for CAST_INT intrinsic. Excepted 1 element.")
                     exit(1)
                 inVariable = block.stack.pop()
 
                 if inVariable.type != DataType.INT:
                     outVariable = Llvm_stack_value(DataType.INT)
-                    block.instructions.append(Llvm_instruction(op.typ, [inVariable], [outVariable], op.operand))
+                    block.instructions.append(Llvm_instruction(op.typ, [inVariable], [outVariable], Intrinsic.CAST_INT))
                     block.stack.append(outVariable)
                 else:
                     block.stack.append(inVariable)
@@ -1774,7 +1775,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                     Intrinsic.SYSCALL6: 6
                 }[op.operand]
                 if len(block.stack) < n+1:
-                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for SYSCALL%d intrinsic. Excepted %d elements." % (n, n + 1))
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for SYSCALL%d intrinsic. Excepted %d elements." % (n, n + 1))
                     exit(1)
                 inVariables = [block.stack.pop()]
                 if inVariables[0].type != DataType.INT:
@@ -1789,12 +1790,34 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 outVariable = Llvm_stack_value(DataType.INT)
                 block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
                 block.stack.append(outVariable)
+            elif op.operand == Intrinsic.LOAD or op.operand == Intrinsic.FORTH_LOAD:
+                if len(block.stack) < 1:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for %s intrinsic." % op.operand)
+                    exit(1)
+                inVariable = block.stack.pop()
+                if inVariable.type != DataType.PTR:
+                    compiler_error_with_expansion_stack(op.token, "expected PTR type for %s intrinsic." % op.operand)
+                    exit(1)
+                outVariable = Llvm_stack_value(DataType.INT)
+                block.instructions.append(Llvm_instruction(OpType.INTRINSIC, [inVariable], [outVariable], Intrinsic.LOAD))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.LOAD64 or op.operand == Intrinsic.FORTH_LOAD64:
+                if len(block.stack) < 1:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for %s intrinsic." % op.operand)
+                    exit(1)
+                inVariable = block.stack.pop()
+                if inVariable.type != DataType.PTR:
+                    compiler_error_with_expansion_stack(op.token, "expected PTR type for %s intrinsic." % op.operand)
+                    exit(1)
+                outVariable = Llvm_stack_value(DataType.INT)
+                block.instructions.append(Llvm_instruction(OpType.INTRINSIC, [inVariable], [outVariable], Intrinsic.LOAD64))
+                block.stack.append(outVariable)
             else:
                 assert False, "%s not implemented" % op.operand
         elif op.typ == OpType.IF:
             oldBlock = block
             if len(oldBlock.stack) < 1:
-                compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for IF keyword. Excepted 1 element.")
+                compiler_error_with_expansion_stack(op.token, "stack must not be empty for IF keyword. Excepted 1 element.")
                 exit(1)
             testVariable = oldBlock.stack.pop()
             if testVariable.type != DataType.BOOL:
@@ -1853,7 +1876,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
         elif op.typ == OpType.DO:
             oldBlock = block
             if len(oldBlock.stack) < 1:
-                compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for IF keyword. Excepted 1 element.")
+                compiler_error_with_expansion_stack(op.token, "stack must not be empty for IF keyword. Excepted 1 element.")
                 exit(1)
             testVariable = oldBlock.stack.pop()
             if testVariable.type != DataType.BOOL:
@@ -1932,7 +1955,7 @@ define dso_local void @print(i64 %0) #0 {
 }
 
 ; We used named identifiers everywhere instead of numbered one because llvm doesn't support unconsecutive numbered ones.
-define dso_local i64 @main(i64 %n0, i8** readonly %n1) local_unnamed_addr #0 {
+define dso_local i64 @main(i64 %n0, i8* readonly %n1) local_unnamed_addr #0 {
   br label %B0
 """)
         for block in blocks:
@@ -2014,6 +2037,14 @@ define dso_local i64 @main(i64 %n0, i8** readonly %n1) local_unnamed_addr #0 {
                         for i in ins.inVariables[1:]:
                             variables += ["i8*" if i.type == DataType.PTR else "i64", i.name]
                         out.write(('  %%n%d = call i64 asm sideeffect "syscall", "={ax},{ax}' + "".join(registers[:len(ins.inVariables)-1]) + ',~{rcx},~{r11},~{memory},~{dirflag},~{fpsr},~{flags}"(i64 %%n%d' + ', %s %%n%d' * (len(ins.inVariables)-1) + ') nounwind\n') % tuple(i for i in variables))
+                    elif ins.operand == Intrinsic.LOAD:
+                        tempVariableForExtension = Llvm_make_name()
+                        out.write("  %%n%d = load i8, i8* %%n%d, align 1\n" % (tempVariableForExtension, ins.inVariables[0].name))
+                        out.write("  %%n%d = zext i8 %%n%d to i64\n" % (ins.outVariables[0].name, tempVariableForExtension))
+                    elif ins.operand == Intrinsic.LOAD64:
+                        tempVariableForExtension = Llvm_make_name()
+                        out.write("  %%n%d = bitcast i8* %%n%d to i64*\n" % (tempVariableForExtension, ins.inVariables[0].name))
+                        out.write("  %%n%d = load i64, i64* %%n%d, align 8\n" % (ins.outVariables[0].name, tempVariableForExtension))
                     else:
                         assert False, "not implemented"
                 else:
