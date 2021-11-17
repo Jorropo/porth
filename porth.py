@@ -1812,6 +1812,32 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 outVariable = Llvm_stack_value(DataType.INT)
                 block.instructions.append(Llvm_instruction(OpType.INTRINSIC, [inVariable], [outVariable], Intrinsic.LOAD64))
                 block.stack.append(outVariable)
+            elif op.operand == Intrinsic.MEM:
+                outVariable = Llvm_stack_value(DataType.PTR)
+                block.instructions.append(Llvm_instruction(OpType.INTRINSIC, [], [outVariable], Intrinsic.MEM))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.STORE or op.operand == Intrinsic.FORTH_STORE:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for %s intrinsic." % op.operand)
+                    exit(1)
+                inVariables = [block.stack.pop(),block.stack.pop()]
+                if op.operand == Intrinsic.FORTH_STORE:
+                    inVariables = inVariables[::-1]
+                if inVariables[0].type != DataType.INT or inVariables[1].type != DataType.PTR:
+                    compiler_error_with_expansion_stack(op.token, "Type must be INT and PTR for %s intrinsic." % op.operand)
+                    exit(1)
+                block.instructions.append(Llvm_instruction(OpType.INTRINSIC, inVariables, [], Intrinsic.STORE))
+            elif op.operand == Intrinsic.STORE64 or op.operand == Intrinsic.FORTH_STORE64:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be empty for %s intrinsic." % op.operand)
+                    exit(1)
+                inVariables = [block.stack.pop(),block.stack.pop()]
+                if op.operand == Intrinsic.FORTH_STORE64:
+                    inVariables = inVariables[::-1]
+                if inVariables[0].type != DataType.INT or inVariables[1].type != DataType.PTR:
+                    compiler_error_with_expansion_stack(op.token, "Type must be INT and PTR for %s intrinsic." % op.operand)
+                    exit(1)
+                block.instructions.append(Llvm_instruction(OpType.INTRINSIC, inVariables, [], Intrinsic.STORE64))
             else:
                 assert False, "%s not implemented" % op.operand
         elif op.typ == OpType.IF:
@@ -1907,6 +1933,7 @@ target triple = "x86_64-pc-linux-gnu"
         for si in range(len(strs)):
             s = strs[si]
             out.write('@.s%d = private unnamed_addr constant [%d x i8] c"%s", align 1\n' % (si, len(s), "".join(["\\"+hex(h)[2:].zfill(2) for h in s])))
+        out.write("\n@mem = common dso_local local_unnamed_addr global [%d x i8] zeroinitializer, align 4096\n" % MEM_CAPACITY)
         out.write("""
 attributes #0 = { nounwind "frame-pointer"="none" }
 
@@ -2045,6 +2072,16 @@ define dso_local i64 @main(i64 %n0, i8* readonly %n1) local_unnamed_addr #0 {
                         tempVariableForExtension = Llvm_make_name()
                         out.write("  %%n%d = bitcast i8* %%n%d to i64*\n" % (tempVariableForExtension, ins.inVariables[0].name))
                         out.write("  %%n%d = load i64, i64* %%n%d, align 8\n" % (ins.outVariables[0].name, tempVariableForExtension))
+                    elif ins.operand == Intrinsic.MEM:
+                        out.write("  %%n%d = getelementptr inbounds [%d x i8], [%d x i8]* @mem, i64 0, i64 0\n" % (ins.outVariables[0].name, MEM_CAPACITY, MEM_CAPACITY))
+                    elif ins.operand == Intrinsic.STORE:
+                        tempVariableForTruncation = Llvm_make_name()
+                        out.write("  %%n%d = trunc i64 %%n%d to i8\n" % (tempVariableForTruncation, ins.inVariables[0].name))
+                        out.write("  store i8 %%n%d, i8* %%n%d, align 1\n" % (tempVariableForTruncation, ins.inVariables[1].name))
+                    elif ins.operand == Intrinsic.STORE64:
+                        tempVariableForExtension = Llvm_make_name()
+                        out.write("  %%n%d = bitcast i8* %%n%d to i64*\n" % (tempVariableForExtension, ins.inVariables[1].name))
+                        out.write("  store i64 %%n%d, i64* %%n%d, align 1\n" % (ins.inVariables[0].name, tempVariableForExtension))
                     else:
                         assert False, "not implemented"
                 else:
