@@ -1429,40 +1429,6 @@ def generate_llvm_entry_assembly_linux_x86_64(out_file_path: str):
     with open(out_file_path, "w") as out:
         out.write("BITS 64\n")
         out.write("segment .text\n")
-        out.write("global print\n")
-        out.write("print:\n")
-        out.write("    mov     r9, -3689348814741910323\n")
-        out.write("    sub     rsp, 40\n")
-        out.write("    mov     BYTE [rsp+31], 10\n")
-        out.write("    lea     rcx, [rsp+30]\n")
-        out.write(".L2:\n")
-        out.write("    mov     rax, rdi\n")
-        out.write("    lea     r8, [rsp+32]\n")
-        out.write("    mul     r9\n")
-        out.write("    mov     rax, rdi\n")
-        out.write("    sub     r8, rcx\n")
-        out.write("    shr     rdx, 3\n")
-        out.write("    lea     rsi, [rdx+rdx*4]\n")
-        out.write("    add     rsi, rsi\n")
-        out.write("    sub     rax, rsi\n")
-        out.write("    add     eax, 48\n")
-        out.write("    mov     BYTE [rcx], al\n")
-        out.write("    mov     rax, rdi\n")
-        out.write("    mov     rdi, rdx\n")
-        out.write("    mov     rdx, rcx\n")
-        out.write("    sub     rcx, 1\n")
-        out.write("    cmp     rax, 9\n")
-        out.write("    ja      .L2\n")
-        out.write("    lea     rax, [rsp+32]\n")
-        out.write("    mov     edi, 1\n")
-        out.write("    sub     rdx, rax\n")
-        out.write("    xor     eax, eax\n")
-        out.write("    lea     rsi, [rsp+32+rdx]\n")
-        out.write("    mov     rdx, r8\n")
-        out.write("    mov     rax, 1\n")
-        out.write("    syscall\n")
-        out.write("    add     rsp, 40\n")
-        out.write("    ret\n")
         out.write("extern main\n")
         out.write("global _start\n")
         out.write("_start:\n")
@@ -1888,10 +1854,54 @@ target triple = "x86_64-pc-linux-gnu"
             s = strs[si]
             out.write('@.s%d = private unnamed_addr constant [%d x i8] c"%s", align 1\n' % (si, len(s), "".join(["\\"+hex(h)[2:].zfill(2) for h in s])))
         out.write("""
-declare dso_local void @print(i64) nounwind ; Implemented in the entry assembly file
+attributes #0 = { nounwind "frame-pointer"="none" }
+
+
+define dso_local void @print(i64 %0) #0 {
+  %2 = alloca i64, align 8
+  %3 = alloca [21 x i8], align 16
+  %4 = alloca i8*, align 8
+  %5 = alloca i64, align 8
+  store i64 %0, i64* %2, align 8
+  %6 = getelementptr inbounds [21 x i8], [21 x i8]* %3, i64 0, i64 0
+  %7 = getelementptr inbounds i8, i8* %6, i64 21
+  store i8* %7, i8** %4, align 8
+  %8 = load i8*, i8** %4, align 8
+  store i8 10, i8* %8, align 1
+  store i64 1, i64* %5, align 8
+  br label %9
+
+9:                                                ; preds = %20, %1
+  %10 = load i64, i64* %2, align 8
+  %11 = urem i64 %10, 10
+  %12 = add i64 48, %11
+  %13 = trunc i64 %12 to i8
+  %14 = load i8*, i8** %4, align 8
+  %15 = getelementptr inbounds i8, i8* %14, i32 -1
+  store i8* %15, i8** %4, align 8
+  store i8 %13, i8* %15, align 1
+  %16 = load i64, i64* %2, align 8
+  %17 = udiv i64 %16, 10
+  store i64 %17, i64* %2, align 8
+  %18 = load i64, i64* %5, align 8
+  %19 = add i64 %18, 1
+  store i64 %19, i64* %5, align 8
+  br label %20
+
+20:                                               ; preds = %9
+  %21 = load i64, i64* %2, align 8
+  %22 = icmp ugt i64 %21, 0
+  br i1 %22, label %9, label %23
+
+23:                                               ; preds = %20
+  %24 = load i8*, i8** %4, align 8
+  %25 = load i64, i64* %5, align 8
+  %26 = call i64 asm sideeffect "syscall", "={ax},{ax},{di},{si},{dx},~{rcx},~{r11},~{memory},~{dirflag},~{fpsr},~{flags}"(i32 1, i32 1, i8* %24, i64 %25) nounwind, !srcloc !{i32 118}
+  ret void
+}
 
 ; We used named identifiers everywhere instead of numbered one because llvm doesn't support unconsecutive numbered ones.
-define dso_local i64 @main(i64 %n0, i8** readonly %n1) nounwind {
+define dso_local i64 @main(i64 %n0, i8** readonly %n1) local_unnamed_addr #0 {
   br label %B0
 """)
         for block in blocks:
@@ -2475,7 +2485,7 @@ if __name__ == '__main__' and '__file__' in globals():
             generate_llvm_entry_assembly_linux_x86_64(basepath + ".llvm.entry.asm")
             generate_llvm_linux_x86_64(program, basepath + ".ll")
             cmd_call_echoed(["nasm", "-felf64", basepath + ".llvm.entry.asm"], silent)
-            cmd_call_echoed(["clang", "-nostdlib", "-O2", "-o", basepath, basepath + ".llvm.entry.o", basepath + ".ll"], silent)
+            cmd_call_echoed(["clang", "-nostdlib", "-O2", "-o", basepath, basepath + ".llvm.entry.o", basepath + ".ll", "-fdata-sections", "-ffunction-sections", "-Wl,--gc-sections"], silent)
         if run:
             exit(cmd_call_echoed([basepath] + argv, silent))
     elif subcommand == "help":
