@@ -1823,8 +1823,8 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 inVariables = [block.stack.pop(),block.stack.pop()]
                 if op.operand == Intrinsic.FORTH_STORE:
                     inVariables = inVariables[::-1]
-                if inVariables[0].type != DataType.INT or inVariables[1].type != DataType.PTR:
-                    compiler_error_with_expansion_stack(op.token, "Type must be INT and PTR for %s intrinsic." % op.operand)
+                if inVariables[1].type != DataType.PTR:
+                    compiler_error_with_expansion_stack(op.token, "Type must be INT and PTR for %s intrinsic, got %s %s." % (op.operand, inVariables[0].type, inVariables[1].type))
                     exit(1)
                 block.instructions.append(Llvm_instruction(OpType.INTRINSIC, inVariables, [], Intrinsic.STORE))
             elif op.operand == Intrinsic.STORE64 or op.operand == Intrinsic.FORTH_STORE64:
@@ -1834,8 +1834,8 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 inVariables = [block.stack.pop(),block.stack.pop()]
                 if op.operand == Intrinsic.FORTH_STORE64:
                     inVariables = inVariables[::-1]
-                if inVariables[0].type != DataType.INT or inVariables[1].type != DataType.PTR:
-                    compiler_error_with_expansion_stack(op.token, "Type must be INT and PTR for %s intrinsic." % op.operand)
+                if inVariables[1].type != DataType.PTR:
+                    compiler_error_with_expansion_stack(op.token, "Type must be INT and PTR for %s intrinsic, got %s %s." % (op.operand, inVariables[0].type, inVariables[1].type))
                     exit(1)
                 block.instructions.append(Llvm_instruction(OpType.INTRINSIC, inVariables, [], Intrinsic.STORE64))
             else:
@@ -2075,13 +2075,31 @@ define dso_local i64 @main(i64 %n0, i8* readonly %n1) local_unnamed_addr #0 {
                     elif ins.operand == Intrinsic.MEM:
                         out.write("  %%n%d = getelementptr inbounds [%d x i8], [%d x i8]* @mem, i64 0, i64 0\n" % (ins.outVariables[0].name, MEM_CAPACITY, MEM_CAPACITY))
                     elif ins.operand == Intrinsic.STORE:
-                        tempVariableForTruncation = Llvm_make_name()
-                        out.write("  %%n%d = trunc i64 %%n%d to i8\n" % (tempVariableForTruncation, ins.inVariables[0].name))
-                        out.write("  store i8 %%n%d, i8* %%n%d, align 1\n" % (tempVariableForTruncation, ins.inVariables[1].name))
+                        tempInputVariable = Llvm_make_name()
+                        if ins.inVariables[0].type == DataType.INT:
+                            out.write("  %%n%d = trunc i64 %%n%d to i8\n" % (tempInputVariable, ins.inVariables[0].name))
+                        elif ins.inVariables[0].type == DataType.PTR:
+                            tempInputVariableForTruncation = Llvm_make_name()
+                            out.write("  %%n%d = ptrtoint i8* %%n%d to i64\n" % (tempInputVariableForTruncation, ins.inVariables[0].name))
+                            out.write("  %%n%d = trunc i64 %%n%d to i8\n" % (tempInputVariable, tempInputVariableForTruncation))
+                        elif ins.inVariables[0].type == DataType.BOOL:
+                            out.write("  %%n%d = zext i1 %%n%d to i8\n" % (tempInputVariable, ins.inVariables[0].name))
+                        else:
+                            assert False, "internal compiler bug"
+                        out.write("  store i8 %%n%d, i8* %%n%d, align 1\n" % (tempInputVariable, ins.inVariables[1].name))
                     elif ins.operand == Intrinsic.STORE64:
+                        tempInputVariable = Llvm_make_name()
+                        if ins.inVariables[0].type == DataType.INT:
+                            tempInputVariable = ins.inVariables[0].name
+                        elif ins.inVariables[0].type == DataType.PTR:
+                            out.write("  %%n%d = ptrtoint i8* %%n%d to i64\n" % (tempInputVariable, ins.inVariables[0].name))
+                        elif ins.inVariables[0].type == DataType.BOOL:
+                            out.write("  %%n%d = zext i1 %%n%d to i64\n" % (tempInputVariable, ins.inVariables[0].name))
+                        else:
+                            assert False, "internal compiler bug"
                         tempVariableForExtension = Llvm_make_name()
                         out.write("  %%n%d = bitcast i8* %%n%d to i64*\n" % (tempVariableForExtension, ins.inVariables[1].name))
-                        out.write("  store i64 %%n%d, i64* %%n%d, align 1\n" % (ins.inVariables[0].name, tempVariableForExtension))
+                        out.write("  store i64 %%n%d, i64* %%n%d, align 1\n" % (tempInputVariable, tempVariableForExtension))
                     else:
                         assert False, "not implemented"
                 else:
