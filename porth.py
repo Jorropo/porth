@@ -1546,7 +1546,14 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
             block.instructions.append(Llvm_instruction(OpType.PUSH_STR, [], [outVariables[1]], len(strs)))
             strs.append(s)
         elif op.typ == OpType.INTRINSIC:
-            if op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS:
+            if op.operand == Intrinsic.HERE:
+                s = ("%s:%d:%d" % op.token.loc).encode('utf-8')
+                outVariables = [Llvm_stack_value(DataType.INT), Llvm_stack_value(DataType.PTR)]
+                block.stack += outVariables
+                block.instructions.append(Llvm_instruction(OpType.PUSH_INT, [], [outVariables[0]], len(s)))
+                block.instructions.append(Llvm_instruction(OpType.PUSH_STR, [], [outVariables[1]], len(strs)))
+                strs.append(s)
+            elif op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS:
                 if len(block.stack) < 2:
                     compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % str(op.operand))
                     exit(1)
