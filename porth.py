@@ -1540,24 +1540,54 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
     strs: List[bytes] = []
     for op in program:
         if op.typ == OpType.PUSH_INT:
-            inVariable = Llvm_stack_value(DataType.INT)
-            block.stack.append(inVariable)
-            block.instructions.append(Llvm_instruction(op.typ, [], [inVariable], op.operand))
+            outVariable = Llvm_stack_value(DataType.INT)
+            block.stack.append(outVariable)
+            block.instructions.append(Llvm_instruction(op.typ, [], [outVariable], op.operand))
         elif op.typ == OpType.PUSH_STR:
             assert isinstance(op.operand, str), "internal compiler bug"
             s = op.operand.encode("utf-8")
-            inVariables = [Llvm_stack_value(DataType.INT), Llvm_stack_value(DataType.PTR)]
-            block.stack += inVariables
-            block.instructions.append(Llvm_instruction(OpType.PUSH_INT, [], [inVariables[0]], len(s)))
-            block.instructions.append(Llvm_instruction(OpType.PUSH_STR, [], [inVariables[1]], len(strs)))
+            outVariables = [Llvm_stack_value(DataType.INT), Llvm_stack_value(DataType.PTR)]
+            block.stack += outVariables
+            block.instructions.append(Llvm_instruction(OpType.PUSH_INT, [], [outVariables[0]], len(s)))
+            block.instructions.append(Llvm_instruction(OpType.PUSH_STR, [], [outVariables[1]], len(strs)))
             strs.append(s)
         elif op.typ == OpType.INTRINSIC:
-            if op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS or op.operand == Intrinsic.MUL or op.operand == Intrinsic.SHR or op.operand == Intrinsic.SHL:
+            if op.operand == Intrinsic.PLUS or op.operand == Intrinsic.MINUS:
                 if len(block.stack) < 2:
                     compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % str(op.operand))
                     exit(1)
                 inVariables = [block.stack.pop(), block.stack.pop()]
-                outVariable = Llvm_stack_value(DataType.PTR if inVariables[0].type == DataType.PTR or inVariables[1].type == DataType.PTR else DataType.INT)
+                ptrc = sum(1 for i in inVariables if i.type == DataType.PTR)
+                if 1 < ptrc:
+                    compiler_error_with_expansion_stack(op.token, "%s intrinsic only support adding PTR to INT or INT to INT, not PTR to PTR." % str(op.operand))
+                    exit(1)
+                if 0 < sum(1 for i in inVariables if i.type == DataType.BOOL):
+                    compiler_error_with_expansion_stack(op.token, "%s intrinsic doesn't support BOOL." % str(op.operand))
+                    exit(1)
+                if inVariables[0].type == DataType.PTR:
+                    inVariables = inVariables[::-1]
+                if ptrc > 0:
+                    outVariable = Llvm_stack_value(DataType.PTR)
+                    if op.operand == Intrinsic.MINUS:
+                        tempZeroValue = Llvm_stack_value(DataType.INT)
+                        block.instructions.append(Llvm_instruction(OpType.PUSH_INT, [], [tempZeroValue], 0))
+                        tempVariableForNegating = Llvm_stack_value(DataType.INT)
+                        block.instructions.append(Llvm_instruction(OpType.INTRINSIC, [inVariables[0], tempZeroValue], [tempVariableForNegating], Intrinsic.MINUS))
+                        inVariables[0] = tempVariableForNegating
+                    block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], Intrinsic.PLUS))
+                else:
+                    outVariable = Llvm_stack_value(DataType.INT)
+                    block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
+                block.stack.append(outVariable)
+            elif op.operand == Intrinsic.MUL or op.operand == Intrinsic.SHR or op.operand == Intrinsic.SHL:
+                if len(block.stack) < 2:
+                    compiler_error_with_expansion_stack(op.token, "stack must not be emtpy for %s intrinsic. Excepted 2 elements." % str(op.operand))
+                    exit(1)
+                inVariables = [block.stack.pop(), block.stack.pop()]
+                if inVariables[0].type != DataType.INT or inVariables[1].type != DataType.INT:
+                    compiler_error_with_expansion_stack(op.token, "%s intrinsic only supports INTs" % str(op.operand))
+                    exit(1)
+                outVariable = Llvm_stack_value(DataType.INT)
                 block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
                 block.stack.append(outVariable)
             elif op.operand == Intrinsic.DIVMOD:
@@ -1923,33 +1953,20 @@ define dso_local i64 @main(i64 %n0, i8** readonly %n1) local_unnamed_addr #0 {
                     sl = len(strs[ins.operand])
                     out.write("  %%n%d = getelementptr inbounds [%d x i8], [%d x i8]* @.s%d, i64 0, i64 0\n" % (ins.outVariables[0].name, sl, sl, ins.operand))
                 elif ins.op == OpType.INTRINSIC:
-                    if ins.operand == Intrinsic.PLUS or ins.operand == Intrinsic.MINUS or ins.operand == Intrinsic.MUL or ins.operand == Intrinsic.SHR or ins.operand == Intrinsic.SHL:
+                    if ins.operand == Intrinsic.PLUS:
                         assert isinstance(ins.operand, Intrinsic), "internal compiler bug"
-                        # For PLUS, MINUS and MUL cheat a bit. LLVM really wants you to use their pointer access logic, but it's too high level for us.
-                        # For now we change pointers into i64 and manually do math on them.
-                        isOperatingOnPTR = ins.outVariables[0].type == DataType.PTR
-                        lhs = ins.inVariables[1]
-                        if isOperatingOnPTR and lhs.type == DataType.PTR:
-                            tempVariableForPTRConversion = Llvm_stack_value(DataType.INT)
-                            out.write("  %%n%d = ptrtoint i8* %%n%d to i64\n" % (tempVariableForPTRConversion.name, lhs.name))
-                            lhs = tempVariableForPTRConversion
-                        rhs = ins.inVariables[0]
-                        if isOperatingOnPTR and rhs.type == DataType.PTR:
-                            tempVariableForPTRConversion = Llvm_stack_value(DataType.INT)
-                            out.write("  %%n%d = ptrtoint i8* %%n%d to i64\n" % (tempVariableForPTRConversion.name, rhs.name))
-                            rhs = tempVariableForPTRConversion
-                        result = ins.outVariables[0]
-                        tempVariableForPTRConversion = Llvm_stack_value(DataType.INT) if isOperatingOnPTR else result
-                        instructionTable = {
-                            Intrinsic.PLUS: "add",
+                        if not ins.outVariables[0].type == DataType.PTR:
+                            out.write("  %%n%d = add i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                        else:
+                            out.write("  %%n%d = getelementptr inbounds i8, i8* %%n%d, i64 %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
+                    elif ins.operand == Intrinsic.MINUS or ins.operand == Intrinsic.MUL or ins.operand == Intrinsic.SHR or ins.operand == Intrinsic.SHL:
+                        assert isinstance(ins.operand, Intrinsic), "internal compiler bug"
+                        out.write("  %%n%d = %s i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, {
                             Intrinsic.MINUS: "sub",
                             Intrinsic.MUL: "mul",
                             Intrinsic.SHR: "lshr",
                             Intrinsic.SHL: "shl"
-                        }
-                        out.write("  %%n%d = %s i64 %%n%d, %%n%d\n" % (tempVariableForPTRConversion.name, instructionTable[ins.operand], lhs.name, rhs.name))
-                        if isOperatingOnPTR:
-                            out.write("  %%n%d = inttoptr i64 %%n%d to i8*\n" % (result.name, tempVariableForPTRConversion.name))
+                        }[ins.operand], ins.inVariables[1].name, ins.inVariables[0].name))
                     elif ins.operand == Intrinsic.DIVMOD:
                         out.write("  %%n%d = udiv i64 %%n%d, %%n%d\n" % (ins.outVariables[0].name, ins.inVariables[1].name, ins.inVariables[0].name))
                         out.write("  %%n%d = urem i64 %%n%d, %%n%d\n" % (ins.outVariables[1].name, ins.inVariables[1].name, ins.inVariables[0].name))
