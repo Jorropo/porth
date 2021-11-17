@@ -495,12 +495,6 @@ class DataType(IntEnum):
     BOOL=auto()
     PTR=auto()
 
-    def __str__(self):
-        assert len(DataType) == 3, "unhandled datatypes"
-        if self == DataType.INT:  return "INT"
-        if self == DataType.BOOL: return "BOOL"
-        if self == DataType.PTR:  return "PTR"
-
 def compiler_diagnostic(loc: Loc, tag: str, message: str):
     print("%s:%d:%d: %s: %s" % (loc + (tag, message)), file=sys.stderr)
 
@@ -1789,7 +1783,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
                 block.instructions.append(Llvm_instruction(op.typ, inVariables, [outVariable], op.operand))
                 block.stack.append(outVariable)
             else:
-                assert False, "not implemented"
+                assert False, "%s not implemented" % op.operand
         elif op.typ == OpType.IF:
             oldBlock = block
             if len(oldBlock.stack) < 1:
@@ -1870,7 +1864,7 @@ def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
             oldBlock.nextBlock = block
             controlFlowStack.append(oldBlock)
         else:
-            assert False, "not implemented"
+            assert False, "%s not implemented" % op.typ
     assert len(controlFlowStack) == 0, "Unmatched IF"
 
     # Second pass dump the SSA as llvm IR.
