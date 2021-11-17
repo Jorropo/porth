@@ -495,6 +495,12 @@ class DataType(IntEnum):
     BOOL=auto()
     PTR=auto()
 
+    def __str__(self):
+        assert len(DataType) == 3, "unhandled datatypes"
+        if self == DataType.INT:  return "INT"
+        if self == DataType.BOOL: return "BOOL"
+        if self == DataType.PTR:  return "PTR"
+
 def compiler_diagnostic(loc: Loc, tag: str, message: str):
     print("%s:%d:%d: %s: %s" % (loc + (tag, message)), file=sys.stderr)
 
@@ -1546,12 +1552,16 @@ class Llvm_block:
             else:
                 compiler_error_with_expansion_stack(op.token, "Stack length doesn't match with base block.")
             assert False
-            exit(1)
         for i in range(len(self.phis)):
-            if self.phis[i][0].type != newParent.stack[0].type:
-                compiler_error_with_expansion_stack(op.token, "Stacks don't match at depth %d." % i)
-                exit(1)
-            self.phis[i][1].append((newParent, newParent.stack[0]))
+            if self.phis[i][0].type != newParent.stack[i].type:
+                f = (i, self.phis[i][0].type, newParent.stack[i].type)
+                if newParent.op is not None:
+                    compiler_diagnostic_with_expansion_stack(newParent.op.token, "ERROR", "Stacks don't match at index %d, %s vs %s." % f)
+                    compiler_error_with_expansion_stack(op.token, "With this")
+                else:
+                    compiler_error_with_expansion_stack(op.token, "Stacks don't match at index %d with baseblock, %s vs %s." % f)
+                assert False
+            self.phis[i][1].append((newParent, newParent.stack[i]))
 
 def generate_llvm_linux_x86_64(program: Program, out_file_path: str):
     # First pass generate the SSA by running a virtual stack.
